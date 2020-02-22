@@ -24,6 +24,8 @@ struct Command {
 static struct Command commands[] = {
 	{ "help", "Display this list of commands", mon_help },
 	{ "kerninfo", "Display information about the kernel", mon_kerninfo },
+	{ "exit", "Exit from JOS", mon_kerninfo },
+	{ "trace", "Print the stack trace", mon_backtrace },
 };
 
 /***** Implementations of basic kernel monitor commands *****/
@@ -54,10 +56,55 @@ mon_kerninfo(int argc, char **argv, struct Trapframe *tf)
 	return 0;
 }
 
+int 
+exit_JOS(int argc, char **argv, struct Trapframe *tf)
+{
+	// exit();
+	return 0;
+}
+
 int
 mon_backtrace(int argc, char **argv, struct Trapframe *tf)
 {
-	// Your code here.
+	int depth=0; //record the trace depth
+	/*
+	From left to right:
+		register %ebp
+		saved ebp
+		return address
+		argument 0,1,2,3,4
+	*/
+	uint32_t *cur_ebp=(uint32_t*)read_ebp(),
+		saved_ebp,ret_adr,arg0,arg1,arg2,arg3,arg4;
+	
+	while(true){
+		int arg_index;
+		struct Eipdebuginfo info;
+		
+		saved_ebp=*cur_ebp;
+		ret_adr=*(cur_ebp+1);
+		
+		debuginfo_eip((uintptr_t)ret_adr,&info);
+
+		cprintf("depth %d: ebp 0x%x, retadr 0x%x, args",depth,cur_ebp,ret_adr);
+		
+		for(arg_index=0;arg_index<info.eip_fn_narg;arg_index++)
+			cprintf(" 0x%x",*(cur_ebp+2+arg_index));
+	
+		cprintf("\n       %s:%d: %.*s+%d\n",info.eip_file,info.eip_line,info.eip_fn_namelen,info.eip_fn_name,(uint32_t)ret_adr-(uint32_t)info.eip_fn_addr-5);
+		
+		/*
+			0x0 is the base address of kernel stack.
+			Current ebp reachs 0x0, which implies, we have reached the
+			root of the calling nest.		
+		*/
+		if((uint32_t)cur_ebp==(uint32_t)0x0)
+			break;
+
+		cur_ebp=(uint32_t*)saved_ebp;// Track back to the base address of caller.
+		depth++;// Update the trace depth.
+	}
+
 	return 0;
 }
 
@@ -115,6 +162,7 @@ monitor(struct Trapframe *tf)
 	cprintf("Welcome to the JOS kernel monitor!\n");
 	cprintf("Type 'help' for a list of commands.\n");
 
+	hookfunc();
 
 	while (1) {
 		buf = readline("K> ");
