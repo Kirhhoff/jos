@@ -72,4 +72,16 @@ typedef int32_t off_t;
 // Return the offset of 'member' relative to the beginning of a struct type
 #define offsetof(type, member)  ((size_t) (&((type*)0)->member))
 
+// obtain the container(struct) pointer from a member pointer
+// defined for generic programming
+#define container_of(ptr,type,member)({ \
+	const typeof(((type*)0)->member)* __mem_type_ptr=(ptr); \
+	((type*)(((char*)__mem_type_ptr)-offsetof(type,member)));\
+})
+
+// alias
+#define list_entry(ptr,type,member) (container_of(ptr,type,member))
+#define for_each_list(itr,list_head) \
+	for(itr=(list_head)->next;itr!=list_head;itr=itr->next)
+
 #endif /* !JOS_INC_TYPES_H */
