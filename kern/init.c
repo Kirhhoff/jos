@@ -3,7 +3,6 @@
 #include <inc/stdio.h>
 #include <inc/string.h>
 #include <inc/assert.h>
-
 #include <kern/monitor.h>
 #include <kern/console.h>
 #include <kern/pmap.h>

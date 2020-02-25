@@ -162,6 +162,11 @@ extern volatile pte_t uvpt[];     // VA of "virtual page table"
 extern volatile pde_t uvpd[];     // VA of current page directory
 #endif
 
+// generic C linked list
+struct list_head{
+	struct list_head *prev,*next;
+};
+
 /*
  * Page descriptor structures, mapped at UPAGES.
  * Read/write to the kernel, read-only to user programs.
@@ -182,6 +187,34 @@ struct PageInfo {
 	// boot_alloc do not have valid reference count fields.
 
 	uint16_t pp_ref;
+
+	// information used to support page frame fragmentaion
+	// management of buddy system
+	// 0 if the page is allocated
+	// otherwise indicates page frame number
+	// in pow of 2
+	int order;
+
+	// generic structure
+	// used to implement doubly linked
+	// PageInfos
+	struct list_head list_head; 
+};
+
+// datastructure used for managing a specific
+// size of page frame fragment, which
+// works with all free page frame fragment
+// of such size
+struct free_area{
+
+	// number of list node(rather than
+	// page frame) in this area
+	uint32_t nfree;
+
+	// list_head of all nodes in this area
+	// note: the index of Pageinfos pointed
+	//      by these nodes are unordered
+	struct list_head free_list_head;
 };
 
 #endif /* !__ASSEMBLER__ */

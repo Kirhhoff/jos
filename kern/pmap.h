@@ -17,6 +17,16 @@ extern size_t npages;
 
 extern pde_t *kern_pgdir;
 
+// meta information to control
+// PSE support
+#ifndef PSE_SUPPORT
+#define PSE_SUPPORT
+#endif
+#ifdef PSE_SUPPORT
+#define KPGSIZE (LPGSIZE)
+#else
+#define KPGSIZE (PGSIZE)
+#endif
 
 /* This macro takes a kernel virtual address -- an address that points above
  * KERNBASE, where the machine's maximum 256MB of physical memory is mapped --
@@ -55,11 +65,18 @@ void	mem_init(void);
 
 void	page_init(void);
 struct PageInfo *page_alloc(int alloc_flags);
+#ifdef PSE_SUPPORT
+struct PageInfo *large_page_alloc(int alloc_flags);
+#endif
 void	page_free(struct PageInfo *pp);
 int	page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm);
 void	page_remove(pde_t *pgdir, void *va);
 struct PageInfo *page_lookup(pde_t *pgdir, void *va, pte_t **pte_store);
 void	page_decref(struct PageInfo *pp);
+
+struct PageInfo* malloc(uint32_t order);
+void free(struct PageInfo* pp,int order);
+void set_buddy(uint32_t i_start,uint32_t i_end,int order);
 
 void	tlb_invalidate(pde_t *pgdir, void *va);
 
@@ -88,4 +105,42 @@ page2kva(struct PageInfo *pp)
 
 pte_t *pgdir_walk(pde_t *pgdir, const void *va, int create);
 
+
+static inline void init_list_head(struct list_head* list_head)
+{
+	list_head->next=list_head->prev=list_head;
+}
+
+static inline void __list_add(struct list_head *prev,struct list_head *next,struct list_head *new)
+{
+	prev->next=next->prev=new;
+	new->prev=prev;
+	new->next=next;	
+};
+
+static inline void __list_del(struct list_head *prev,struct list_head *next)
+{
+	prev->next=next;
+	next->prev=prev;
+};
+
+static inline void list_add(struct list_head *new,struct list_head *head)
+{	
+	__list_add(head,head->next,new);
+}
+
+static inline void list_del(struct list_head *entry)
+{
+	__list_del(entry->prev,entry->next);
+};
+
+static inline void list_add_tail(struct list_head *new,struct list_head *head)
+{
+	__list_add(head->prev,head,new);
+}
+
+static inline bool list_empty(struct list_head *list_head)
+{
+	return list_head->next==list_head;
+}
 #endif /* !JOS_KERN_PMAP_H */
