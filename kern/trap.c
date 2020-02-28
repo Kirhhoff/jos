@@ -58,13 +58,69 @@ static const char *trapname(int trapno)
 	return "(unknown trap)";
 }
 
+#define INT_DEFINE(name) \
+	void name();
+
+INT_DEFINE(divide)
+INT_DEFINE(debug)
+INT_DEFINE(nmi)
+INT_DEFINE(brkpt)
+INT_DEFINE(pflow)
+INT_DEFINE(_bound)
+INT_DEFINE(illop)
+INT_DEFINE(device)
+INT_DEFINE(dblflt)
+INT_DEFINE(coproc)
+INT_DEFINE(tss)
+INT_DEFINE(segnp)
+INT_DEFINE(stack)
+INT_DEFINE(gpflt)
+INT_DEFINE(pgflt)
+INT_DEFINE(_res)
+INT_DEFINE(fperr)
+INT_DEFINE(_align)
+INT_DEFINE(mchk)
+INT_DEFINE(simderr)
 
 void
 trap_init(void)
 {
+	// Gate descriptors for interrupts and traps
+struct Gatedesc {
+	unsigned gd_off_15_0 : 16;   // low 16 bits of offset in segment
+	unsigned gd_sel : 16;        // segment selector
+	unsigned gd_args : 5;        // # args, 0 for interrupt/trap gates
+	unsigned gd_rsv1 : 3;        // reserved(should be zero I guess)
+	unsigned gd_type : 4;        // type(STS_{TG,IG32,TG32})
+	unsigned gd_s : 1;           // must be 0 (system)
+	unsigned gd_dpl : 2;         // descriptor(meaning new) privilege level
+	unsigned gd_p : 1;           // Present
+	unsigned gd_off_31_16 : 16;  // high bits of offset in segment
+};
 	extern struct Segdesc gdt[];
-
+	
+	
 	// LAB 3: Your code here.
+	SETGATE(idt[0],STS_TG32,GD_KT,divide,0);
+	SETGATE(idt[1],STS_TG32,GD_KT,debug,0);
+	SETGATE(idt[2],STS_TG32,GD_KT,nmi,0);
+	SETGATE(idt[3],STS_TG32,GD_KT,brkpt,0);
+	SETGATE(idt[4],STS_TG32,GD_KT,pflow,0);
+	SETGATE(idt[5],STS_TG32,GD_KT,_bound,0);
+	SETGATE(idt[6],STS_TG32,GD_KT,illop,0);
+	SETGATE(idt[7],STS_TG32,GD_KT,device,0);
+	SETGATE(idt[8],STS_TG32,GD_KT,dblflt,0);
+	SETGATE(idt[9],STS_TG32,GD_KT,coproc,0);
+	SETGATE(idt[10],STS_TG32,GD_KT,tss,0);
+	SETGATE(idt[11],STS_TG32,GD_KT,segnp,0);
+	SETGATE(idt[12],STS_TG32,GD_KT,stack,0);
+	SETGATE(idt[13],STS_TG32,GD_KT,gpflt,0);
+	SETGATE(idt[14],STS_TG32,GD_KT,pgflt,0);
+	SETGATE(idt[15],STS_TG32,GD_KT,_res,0);
+	SETGATE(idt[16],STS_TG32,GD_KT,fperr,0);
+	SETGATE(idt[17],STS_TG32,GD_KT,_align,0);
+	SETGATE(idt[18],STS_TG32,GD_KT,mchk,0);
+	SETGATE(idt[19],STS_TG32,GD_KT,simderr,0);
 
 	// Per-CPU setup 
 	trap_init_percpu();
@@ -144,6 +200,7 @@ trap_dispatch(struct Trapframe *tf)
 {
 	// Handle processor exceptions.
 	// LAB 3: Your code here.
+	// tf->
 
 	// Unexpected trap: The user process or the kernel has a bug.
 	print_trapframe(tf);

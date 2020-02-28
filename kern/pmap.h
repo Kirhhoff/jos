@@ -62,7 +62,7 @@ enum {
 };
 
 void	mem_init(void);
-
+int 	setupkvm(pde_t* pgdir);
 void	page_init(void);
 struct PageInfo *page_alloc(int alloc_flags);
 #ifdef PSE_SUPPORT

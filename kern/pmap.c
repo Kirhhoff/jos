@@ -61,7 +61,7 @@ i386_detect_memory(void)
 // Set up memory mappings above UTOP.
 // --------------------------------------------------------------
 
-static void boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm);
+static int boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm);
 #ifdef PSE_SUPPORT
 static void boot_map_large_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm);
 #endif
@@ -162,6 +162,9 @@ mem_init(void)
 	//////////////////////////////////////////////////////////////////////
 	// Make 'envs' point to an array of size 'NENV' of 'struct Env'.
 	// LAB 3: Your code here.
+	size_t env_array_size=NENV*sizeof(struct Env);
+	envs=(struct Env*)boot_alloc(env_array_size);
+	memset(envs,0,env_array_size);
 
 	//////////////////////////////////////////////////////////////////////
 	// Now that we've allocated the initial kernel data structures, we set
@@ -177,71 +180,7 @@ mem_init(void)
 
 	//////////////////////////////////////////////////////////////////////
 	// Now we set up virtual memory
-
-	//////////////////////////////////////////////////////////////////////
-	// Map 'pages' read-only by the user at linear address UPAGES
-	// Permissions:
-	//    - the new image at UPAGES -- kernel R, user R
-	//      (ie. perm = PTE_U | PTE_P)
-	//    - pages itself -- kernel RW, user NONE
-	// Your code goes here:
-
-	//define region size and initial pa
-	uintptr_t UPAGES_size=ROUNDUP(npages*sizeof(struct PageInfo),PGSIZE),
-			pages_pa=PADDR(pages);
-	
-	boot_map_region(kern_pgdir,UPAGES,UPAGES_size,pages_pa,PTE_U);
-
-	//////////////////////////////////////////////////////////////////////
-	// Map the 'envs' array read-only by the user at linear address UENVS
-	// (ie. perm = PTE_U | PTE_P).
-	// Permissions:
-	//    - the new image at UENVS  -- kernel R, user R
-	//    - envs itself -- kernel RW, user NONE
-	// LAB 3: Your code here.
-
-	//////////////////////////////////////////////////////////////////////
-	// Use the physical memory that 'bootstack' refers to as the kernel
-	// stack.  The kernel stack grows down from virtual address KSTACKTOP.
-	// We consider the entire range from [KSTACKTOP-PTSIZE, KSTACKTOP)
-	// to be the kernel stack, but break this into two pieces:
-	//     * [KSTACKTOP-KSTKSIZE, KSTACKTOP) -- backed by physical memory
-	//     * [KSTACKTOP-PTSIZE, KSTACKTOP-KSTKSIZE) -- not backed; so if
-	//       the kernel overflows its stack, it will fault rather than
-	//       overwrite memory.  Known as a "guard page".
-	//     Permissions: kernel RW, user NONE
-	// Your code goes here:
-
-	// define initial va and pa
-	uintptr_t KSTACKBASE=KSTACKTOP-KSTKSIZE,bootstack_pa=PADDR(bootstack);
-	boot_map_region(kern_pgdir,KSTACKBASE,KSTKSIZE,bootstack_pa,PTE_W);
-
-	// set page directory entry permission
-	for(n=0;n<KSTKSIZE;n+=PTSIZE)
-		kern_pgdir[PDX(KERNBASE+n)]|=PTE_W;
-
-	//////////////////////////////////////////////////////////////////////
-	// Map all of physical memory at KERNBASE.
-	// Ie.  the VA range [KERNBASE, 2^32) should map to
-	//      the PA range [0, 2^32 - KERNBASE)
-	// We might not have 2^32 - KERNBASE bytes of physical memory, but
-	// we just set up the mapping anyway.
-	// Permissions: kernel RW, user NONE
-	// Your code goes here:
-
-#ifdef PSE_SUPPORT
-	// define region size
-	uintptr_t KERNSIZE=ROUNDUP((~KERNBASE)+1,LPGSIZE);
-	boot_map_large_region(kern_pgdir,KERNBASE,KERNSIZE,0x0,PTE_W);
-#else
-	// define region size
-	uintptr_t KERNSIZE=(~KERNBASE)+1;
-	boot_map_region(kern_pgdir,KERNBASE,KERNSIZE,0x0,PTE_W);
-
-	// set page directory entry permission
-	for(n=0;n<KERNSIZE;n+=PTSIZE)
-		kern_pgdir[PDX(KERNBASE+n)]|=PTE_W;
-#endif
+	setupkvm(kern_pgdir);
 
 	// Check that the initial page directory has been set up correctly.
 	check_kern_pgdir();
@@ -275,7 +214,82 @@ mem_init(void)
 	check_page_installed_pgdir();
 
 	// check malloc and free functions
-	check_malloc_and_free();
+	// check_malloc_and_free();
+}
+
+int setupkvm(pde_t* pgdir){
+	//////////////////////////////////////////////////////////////////////
+	// Map 'pages' read-only by the user at linear address UPAGES
+	// Permissions:
+	//    - the new image at UPAGES -- kernel R, user R
+	//      (ie. perm = PTE_U | PTE_P)
+	//    - pages itself -- kernel RW, user NONE
+	// Your code goes here:
+
+	//define region size and initial pa
+	uintptr_t UPAGES_size=ROUNDUP(npages*sizeof(struct PageInfo),PGSIZE),
+			pages_pa=PADDR(pages);
+	if(boot_map_region(pgdir,UPAGES,UPAGES_size,pages_pa,PTE_U)<0)
+		return -E_NO_MEM;
+		
+	//////////////////////////////////////////////////////////////////////
+	// Map the 'envs' array read-only by the user at linear address UENVS
+	// (ie. perm = PTE_U | PTE_P).
+	// Permissions:
+	//    - the new image at UENVS  -- kernel R, user R
+	//    - envs itself -- kernel RW, user NONE
+	// LAB 3: Your code here.
+	size_t UENVS_size=ROUNDUP(NENV*sizeof(struct Env),PGSIZE);
+	physaddr_t envs_pa=PADDR(envs);
+	if(boot_map_region(pgdir,UENVS,UENVS_size,envs_pa,PTE_U)<0)
+		return -E_NO_MEM;
+
+	//////////////////////////////////////////////////////////////////////
+	// Use the physical memory that 'bootstack' refers to as the kernel
+	// stack.  The kernel stack grows down from virtual address KSTACKTOP.
+	// We consider the entire range from [KSTACKTOP-PTSIZE, KSTACKTOP)
+	// to be the kernel stack, but break this into two pieces:
+	//     * [KSTACKTOP-KSTKSIZE, KSTACKTOP) -- backed by physical memory
+	//     * [KSTACKTOP-PTSIZE, KSTACKTOP-KSTKSIZE) -- not backed; so if
+	//       the kernel overflows its stack, it will fault rather than
+	//       overwrite memory.  Known as a "guard page".
+	//     Permissions: kernel RW, user NONE
+	// Your code goes here:
+
+	// define initial va and pa
+	uintptr_t KSTACKBASE=KSTACKTOP-KSTKSIZE,bootstack_pa=PADDR(bootstack);
+	if(boot_map_region(pgdir,KSTACKBASE,KSTKSIZE,bootstack_pa,PTE_W)<0)
+		return -E_NO_MEM;
+
+	// set page directory entry permission
+	for(uint32_t n=0;n<KSTKSIZE;n+=PTSIZE)
+		pgdir[PDX(KERNBASE+n)]|=PTE_W;
+
+	//////////////////////////////////////////////////////////////////////
+	// Map all of physical memory at KERNBASE.
+	// Ie.  the VA range [KERNBASE, 2^32) should map to
+	//      the PA range [0, 2^32 - KERNBASE)
+	// We might not have 2^32 - KERNBASE bytes of physical memory, but
+	// we just set up the mapping anyway.
+	// Permissions: kernel RW, user NONE
+	// Your code goes here:
+
+#ifdef PSE_SUPPORT
+	// define region size
+	uintptr_t KERNSIZE=ROUNDUP((~KERNBASE)+1,LPGSIZE);
+	boot_map_large_region(pgdir,KERNBASE,KERNSIZE,0x0,PTE_W);
+#else
+	// define region size
+	uintptr_t KERNSIZE=(~KERNBASE)+1;
+	if(boot_map_region(pgdir,KERNBASE,KERNSIZE,0x0,PTE_W)<0)
+		return -E_NO_MEM;
+
+	// set page directory entry permission
+	for(n=0;n<KERNSIZE;n+=PTSIZE)
+		pgdir[PDX(KERNBASE+n)]|=PTE_W;
+#endif
+	
+	return 0;
 }
 
 // 0-initialize global free_areas array
@@ -384,7 +398,7 @@ page_init(void)
 
 	//the next unallocated page with respect to index=i_start-1 is index=i_end
 	pages[i_start-1].pp_link=&pages[i_end];
-
+	
 	// init free_areas to prepare for malloc() and free()
 	init_free_areas();
 
@@ -558,7 +572,6 @@ pte_t *
 pgdir_walk(pde_t *pgdir, const void *va, int create)
 {
 	int pdx=PDX(va),ptx=PTX(va);
-	
 	// check Page Table page present
 	if (pgdir[pdx] & PTE_P){
 		// when present retrieve pa of page table
@@ -601,7 +614,7 @@ pgdir_walk(pde_t *pgdir, const void *va, int create)
 // mapped pages.
 //
 // Hint: the TA solution uses pgdir_walk
-static void
+static int
 boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm)
 {
 	int n;
@@ -613,11 +626,13 @@ boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm
 
 		// check page allocation
 		if (!va_pte)
-			panic("Fail to allocate physical memory page.\n");
-		
+			return -E_NO_MEM;
+
 		// update page table entry
 		*va_pte=(pte_t)((pa+n)|perm|PTE_P);	
 	}
+
+	return 0;
 }
 
 #ifdef PSE_SUPPORT
@@ -665,8 +680,10 @@ page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
 	// check whether va is not mapped to pp;
 	// non-corner case
 	if(page2pa(pp)!=PTE_ADDR(*va_pte)){
-		page_remove(pgdir,va);
-		tlb_invalidate(pgdir,va);
+		if((*va_pte)&PTE_P){
+			page_remove(pgdir,va);
+			tlb_invalidate(pgdir,va);
+		}
 		pp->pp_ref++;
 	}
 	

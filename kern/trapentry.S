@@ -46,10 +46,43 @@
 /*
  * Lab 3: Your code here for generating entry points for the different traps.
  */
-
-
+ .global int_handlers
+ int_handlers:
+ TRAPHANDLER_NOEC(divide,0)
+ TRAPHANDLER(debug,1)
+ TRAPHANDLER(nmi,2)
+ TRAPHANDLER(brkpt,3)
+ TRAPHANDLER(pflow,4)
+ TRAPHANDLER(_bound,5)
+ TRAPHANDLER(illop,6)
+ TRAPHANDLER(device,7)
+ TRAPHANDLER(dblflt,8)
+ TRAPHANDLER(coproc,9)
+ TRAPHANDLER(tss,10)
+ TRAPHANDLER(segnp,11)
+ TRAPHANDLER(stack,12)
+ TRAPHANDLER(gpflt,13)
+ TRAPHANDLER(pgflt,14)
+ TRAPHANDLER(_res,15)
+ TRAPHANDLER(fperr,16)
+ TRAPHANDLER(_align,17)
+ TRAPHANDLER(mchk,18)
+ TRAPHANDLER(simderr,19)
 
 /*
  * Lab 3: Your code here for _alltraps
  */
 
+_alltraps:
+
+	pushl %ds
+	pushl %es
+	pushal
+	
+	movl $GD_KD,%eax
+	movl %eax,%es
+	movl %eax,%ds
+
+	pushl %esp
+	
+	call trap
