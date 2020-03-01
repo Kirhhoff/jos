@@ -375,18 +375,26 @@ load_icode(struct Env *e, uint8_t *binary)
 	// memmove(we can still access binary from there as binary resides in
 	// kernel space) then switch back.
 
-	// allocate physical pages
+	// allocate physical pages correspoding to
+	// program's memory size(rather than file size
+	// as file size is smaller than memory size due
+	// to segments like .bss)
 	for(ph=ph_start;ph<ph_end;ph++)
 		if(ph->p_type==ELF_PROG_LOAD)
-			region_alloc(e,(void*)(ph->p_va),ph->p_filesz);
+			region_alloc(e,(void*)(ph->p_va),ph->p_memsz);
 
 	// switch to env pgdir to access virtual address of phs
 	lcr3(PADDR(e->env_pgdir));
 
 	// copy program segmenta under env pgdir
 	for(ph=ph_start;ph<ph_end;ph++)
-		if(ph->p_type==ELF_PROG_LOAD)
+		if(ph->p_type==ELF_PROG_LOAD){
 			memmove((void*)(ph->p_va),(void*)(binary+ph->p_offset),ph->p_filesz);
+
+			// set to 0 where memory size is larger than file size
+			// due to segments like .bss
+			memset((void*)(ph->p_va+ph->p_filesz),0,ph->p_memsz-ph->p_filesz);
+		}
 
 	// switch back to global pgdir
 	lcr3(PADDR(kern_pgdir));

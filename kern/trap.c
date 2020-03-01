@@ -61,27 +61,6 @@ static const char *trapname(int trapno)
 #define INT_DEFINE(name) \
 	void name();
 
-INT_DEFINE(divide)
-INT_DEFINE(debug)
-INT_DEFINE(nmi)
-INT_DEFINE(brkpt)
-INT_DEFINE(pflow)
-INT_DEFINE(_bound)
-INT_DEFINE(illop)
-INT_DEFINE(device)
-INT_DEFINE(dblflt)
-INT_DEFINE(coproc)
-INT_DEFINE(tss)
-INT_DEFINE(segnp)
-INT_DEFINE(stack)
-INT_DEFINE(gpflt)
-INT_DEFINE(pgflt)
-INT_DEFINE(_res)
-INT_DEFINE(fperr)
-INT_DEFINE(_align)
-INT_DEFINE(mchk)
-INT_DEFINE(simderr)
-
 void
 trap_init(void)
 {
@@ -101,26 +80,13 @@ struct Gatedesc {
 	
 	
 	// LAB 3: Your code here.
-	SETGATE(idt[0],STS_TG32,GD_KT,divide,0);
-	SETGATE(idt[1],STS_TG32,GD_KT,debug,0);
-	SETGATE(idt[2],STS_TG32,GD_KT,nmi,0);
-	SETGATE(idt[3],STS_TG32,GD_KT,brkpt,0);
-	SETGATE(idt[4],STS_TG32,GD_KT,pflow,0);
-	SETGATE(idt[5],STS_TG32,GD_KT,_bound,0);
-	SETGATE(idt[6],STS_TG32,GD_KT,illop,0);
-	SETGATE(idt[7],STS_TG32,GD_KT,device,0);
-	SETGATE(idt[8],STS_TG32,GD_KT,dblflt,0);
-	SETGATE(idt[9],STS_TG32,GD_KT,coproc,0);
-	SETGATE(idt[10],STS_TG32,GD_KT,tss,0);
-	SETGATE(idt[11],STS_TG32,GD_KT,segnp,0);
-	SETGATE(idt[12],STS_TG32,GD_KT,stack,0);
-	SETGATE(idt[13],STS_TG32,GD_KT,gpflt,0);
-	SETGATE(idt[14],STS_TG32,GD_KT,pgflt,0);
-	SETGATE(idt[15],STS_TG32,GD_KT,_res,0);
-	SETGATE(idt[16],STS_TG32,GD_KT,fperr,0);
-	SETGATE(idt[17],STS_TG32,GD_KT,_align,0);
-	SETGATE(idt[18],STS_TG32,GD_KT,mchk,0);
-	SETGATE(idt[19],STS_TG32,GD_KT,simderr,0);
+	extern long int_handlers[][4];
+	for(int i=0;i<20;i++)
+		SETGATE(idt[i],STS_TG32,GD_KT,int_handlers[i],0);
+	SETGATE(idt[T_BRKPT],STS_TG32,GD_KT,int_handlers[T_BRKPT],3);
+
+	extern void _syscall();
+	SETGATE(idt[T_SYSCALL],STS_TG32,GD_KT,_syscall,3);
 
 	// Per-CPU setup 
 	trap_init_percpu();
@@ -200,7 +166,32 @@ trap_dispatch(struct Trapframe *tf)
 {
 	// Handle processor exceptions.
 	// LAB 3: Your code here.
-	// tf->
+	switch (tf->tf_trapno)
+	{
+	case T_PGFLT:
+		page_fault_handler(tf);
+		break;
+
+	case T_BRKPT:
+		monitor(tf);
+		tf->tf_eip++;
+		env_pop_tf(tf);
+		break;
+
+	case T_SYSCALL:
+		tf->tf_regs.reg_eax=syscall(
+				tf->tf_regs.reg_eax,	// sysno
+				tf->tf_regs.reg_edx,	// arg0
+				tf->tf_regs.reg_ecx,	// arg1
+				tf->tf_regs.reg_ebx,	// arg2 
+				tf->tf_regs.reg_edi,	// arg3
+				tf->tf_regs.reg_esi);	// arg4
+		env_pop_tf(tf);
+		break;
+
+	default:
+		break;
+	}
 
 	// Unexpected trap: The user process or the kernel has a bug.
 	print_trapframe(tf);
@@ -260,9 +251,10 @@ page_fault_handler(struct Trapframe *tf)
 	fault_va = rcr2();
 
 	// Handle kernel-mode page faults.
-
 	// LAB 3: Your code here.
-
+	if(!(tf->tf_cs&0x3))
+		panic("Kernel page fault\n");
+	
 	// We've already handled kernel-mode exceptions, so if we get here,
 	// the page fault happened in user mode.
 

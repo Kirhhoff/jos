@@ -30,6 +30,8 @@ static struct Command commands[] = {
 	{ "smps", "Show physical pages mapped to specific virtual address area",mon_showmappings},
 	{ "stp", "Set permissions of specific virtual pages",mon_setpermissions},
 	{ "clp", "Clear permissions of specific virtual pages", mon_clearpermissions},
+	{ "c", "Continue execution.(Debugging)",mon_continue},
+	{ "s", "Single step execution.(Debugging)",mon_singlestep},
 };
 
 /***** Funtional inline tools for kernel monitor commands *****/
@@ -219,14 +221,11 @@ mon_backtrace(int argc, char **argv, struct Trapframe *tf)
 		
 		saved_ebp=*cur_ebp;
 		ret_adr=*(cur_ebp+1);
-		
 		debuginfo_eip((uintptr_t)ret_adr,&info);
-
 		cprintf("depth %d: ebp 0x%x, retadr 0x%x, args",depth,cur_ebp,ret_adr);
 		
 		for(arg_index=0;arg_index<info.eip_fn_narg;arg_index++)
 			cprintf(" 0x%x",*(cur_ebp+2+arg_index));
-	
 		cprintf("\n       %s:%d: %.*s+%d\n",info.eip_file,info.eip_line,info.eip_fn_namelen,info.eip_fn_name,(uint32_t)ret_adr-(uint32_t)info.eip_fn_addr-5);
 		
 		/*
@@ -234,13 +233,15 @@ mon_backtrace(int argc, char **argv, struct Trapframe *tf)
 			Current ebp reachs 0x0, which implies, we have reached the
 			root of the calling nest.		
 		*/
-		if((uint32_t)cur_ebp==(uint32_t)0x0)
-			break;
+		// if((uint32_t)cur_ebp==(uint32_t)0x0)
+		// 	break;
 
 		cur_ebp=(uint32_t*)saved_ebp;// Track back to the base address of caller.
+		if((uint32_t)cur_ebp==(uint32_t)0x0)
+			break;
 		depth++;// Update the trace depth.
 	}
-
+	cprintf("exit\n");
 	return 0;
 }
 
@@ -324,6 +325,14 @@ int mon_clearpermissions(int argc, char **argv, struct Trapframe *tf){
 	mon_showmappings(argc-1,argv,tf);
 
 	return 0;
+}
+int mon_continue(int argc, char **argv, struct Trapframe *tf){
+	write_eflags(read_eflags()& ~FL_TF);
+	return -1;
+}
+int mon_singlestep(int argc, char **argv, struct Trapframe *tf){
+	write_eflags(read_eflags()|FL_TF);
+	return -1;
 }
 
 /***** Kernel monitor command interpreter *****/

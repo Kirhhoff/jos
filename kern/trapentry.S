@@ -23,7 +23,7 @@
 #define TRAPHANDLER(name, num)						\
 	.globl name;		/* define global symbol for 'name' */	\
 	.type name, @function;	/* symbol type is function */		\
-	.align 2;		/* align function definition */		\
+	.align 16;		/* align function definition */		\
 	name:			/* function starts here */		\
 	pushl $(num);							\
 	jmp _alltraps
@@ -35,7 +35,7 @@
 #define TRAPHANDLER_NOEC(name, num)					\
 	.globl name;							\
 	.type name, @function;						\
-	.align 2;							\
+	.align 16;							\
 	name:								\
 	pushl $0;							\
 	pushl $(num);							\
@@ -49,40 +49,50 @@
  .global int_handlers
  int_handlers:
  TRAPHANDLER_NOEC(divide,0)
- TRAPHANDLER(debug,1)
- TRAPHANDLER(nmi,2)
- TRAPHANDLER(brkpt,3)
- TRAPHANDLER(pflow,4)
- TRAPHANDLER(_bound,5)
- TRAPHANDLER(illop,6)
- TRAPHANDLER(device,7)
+ TRAPHANDLER_NOEC(debug,1)
+ TRAPHANDLER_NOEC(nmi,2)
+ TRAPHANDLER_NOEC(brkpt,3)
+ TRAPHANDLER_NOEC(pflow,4)
+ TRAPHANDLER_NOEC(_bound,5)
+ TRAPHANDLER_NOEC(illop,6)
+ TRAPHANDLER_NOEC(device,7)
  TRAPHANDLER(dblflt,8)
- TRAPHANDLER(coproc,9)
+ TRAPHANDLER_NOEC(coproc,9)
  TRAPHANDLER(tss,10)
  TRAPHANDLER(segnp,11)
  TRAPHANDLER(stack,12)
  TRAPHANDLER(gpflt,13)
  TRAPHANDLER(pgflt,14)
  TRAPHANDLER(_res,15)
- TRAPHANDLER(fperr,16)
+ TRAPHANDLER_NOEC(fperr,16)
  TRAPHANDLER(_align,17)
- TRAPHANDLER(mchk,18)
- TRAPHANDLER(simderr,19)
-
+ TRAPHANDLER_NOEC(mchk,18)
+ TRAPHANDLER_NOEC(simderr,19)
+ TRAPHANDLER_NOEC(_syscall,48)
 /*
  * Lab 3: Your code here for _alltraps
  */
 
 _alltraps:
 
+	# save %ds and %es
+	# later we will switch to
+	# kernel data selector
 	pushl %ds
 	pushl %es
+	
+	# save general registers
+	# also keep Trapframe structure
 	pushal
 	
+	# switch to kernel
+	# data selector
 	movl $GD_KD,%eax
 	movl %eax,%es
 	movl %eax,%ds
 
+	# pass parameter
+	# Trapframe* tf to trap
 	pushl %esp
 	
 	call trap
