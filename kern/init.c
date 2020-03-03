@@ -10,6 +10,7 @@
 #include <kern/env.h>
 #include <kern/trap.h>
 
+static void msr_init();
 
 void
 i386_init(void)
@@ -29,7 +30,9 @@ i386_init(void)
 
 	// Lab 2 memory management initialization functions
 	mem_init();
-
+	
+	msr_init();
+	
 	// Lab 3 user environment initialization functions
 	env_init();
 	trap_init();
@@ -46,6 +49,21 @@ i386_init(void)
 	env_run(&envs[0]);
 }
 
+#define IA32_SYSENTER_CS (0x174)
+#define IA32_SYSENTER_EIP (0x176)
+#define IA32_SYSENTER_ESP (0x175)
+
+#define wrmsr(msr,dx_val,ax_val) \
+	asm volatile\
+	("wrmsr"::"c"(msr),"d"(dx_val),"a"(ax_val));
+static void msr_init(){
+	extern void sysenter_handler();
+	uint32_t cs;
+	asm volatile("movl %%cs,%0":"=r"(cs));
+	wrmsr(IA32_SYSENTER_CS,0x0,cs)
+	wrmsr(IA32_SYSENTER_EIP,0x0,sysenter_handler)
+	wrmsr(IA32_SYSENTER_ESP,0x0,KSTACKTOP);
+}
 
 /*
  * Variable panicstr contains argument to first call to panic; used as flag

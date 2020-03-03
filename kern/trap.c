@@ -85,9 +85,6 @@ struct Gatedesc {
 		SETGATE(idt[i],STS_TG32,GD_KT,int_handlers[i],0);
 	SETGATE(idt[T_BRKPT],STS_TG32,GD_KT,int_handlers[T_BRKPT],3);
 
-	extern void _syscall();
-	SETGATE(idt[T_SYSCALL],STS_TG32,GD_KT,_syscall,3);
-
 	// Per-CPU setup 
 	trap_init_percpu();
 }
