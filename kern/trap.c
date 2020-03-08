@@ -65,13 +65,32 @@ static const char *trapname(int trapno)
 	return "(unknown trap)";
 }
 
+#define INT_DEFINE(name) \
+	void name();
 
 void
 trap_init(void)
 {
+	// Gate descriptors for interrupts and traps
+struct Gatedesc {
+	unsigned gd_off_15_0 : 16;   // low 16 bits of offset in segment
+	unsigned gd_sel : 16;        // segment selector
+	unsigned gd_args : 5;        // # args, 0 for interrupt/trap gates
+	unsigned gd_rsv1 : 3;        // reserved(should be zero I guess)
+	unsigned gd_type : 4;        // type(STS_{TG,IG32,TG32})
+	unsigned gd_s : 1;           // must be 0 (system)
+	unsigned gd_dpl : 2;         // descriptor(meaning new) privilege level
+	unsigned gd_p : 1;           // Present
+	unsigned gd_off_31_16 : 16;  // high bits of offset in segment
+};
 	extern struct Segdesc gdt[];
-
+	
+	
 	// LAB 3: Your code here.
+	extern long int_handlers[][4];
+	for(int i=0;i<20;i++)
+		SETGATE(idt[i],STS_TG32,GD_KT,int_handlers[i],0);
+	SETGATE(idt[T_BRKPT],STS_TG32,GD_KT,int_handlers[T_BRKPT],3);
 
 	// Per-CPU setup 
 	trap_init_percpu();
@@ -176,6 +195,32 @@ trap_dispatch(struct Trapframe *tf)
 {
 	// Handle processor exceptions.
 	// LAB 3: Your code here.
+	switch (tf->tf_trapno)
+	{
+	case T_PGFLT:
+		page_fault_handler(tf);
+		break;
+
+	case T_BRKPT:
+		monitor(tf);
+		tf->tf_eip++;
+		env_pop_tf(tf);
+		break;
+
+	case T_SYSCALL:
+		tf->tf_regs.reg_eax=syscall(
+				tf->tf_regs.reg_eax,	// sysno
+				tf->tf_regs.reg_edx,	// arg0
+				tf->tf_regs.reg_ecx,	// arg1
+				tf->tf_regs.reg_ebx,	// arg2 
+				tf->tf_regs.reg_edi,	// arg3
+				tf->tf_regs.reg_esi);	// arg4
+		env_pop_tf(tf);
+		break;
+
+	default:
+		break;
+	}
 
 	// Handle spurious interrupts
 	// The hardware sometimes raises these because of noise on the
@@ -269,9 +314,10 @@ page_fault_handler(struct Trapframe *tf)
 	fault_va = rcr2();
 
 	// Handle kernel-mode page faults.
-
 	// LAB 3: Your code here.
-
+	if(!(tf->tf_cs&0x3))
+		panic("Kernel page fault\n");
+	
 	// We've already handled kernel-mode exceptions, so if we get here,
 	// the page fault happened in user mode.
 

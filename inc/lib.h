@@ -39,6 +39,9 @@ void	set_pgfault_handler(void (*handler)(struct UTrapframe *utf));
 char*	readline(const char *buf);
 
 // syscall.c
+static int32_t
+syscall(int num, int check, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5)
+    __attribute__((noinline));
 void	sys_cputs(const char *string, size_t len);
 int	sys_cgetc(void);
 envid_t	sys_getenvid(void);

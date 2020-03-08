@@ -386,13 +386,13 @@ class Runner():
         should be a list of additional arguments to pass to make.  The
         timeout argument bounds how long to run before returning."""
 
-        def run_qemu_kw(target_base="qemu", make_args=[], timeout=30):
+        def run_qemu_kw(target_base="qemu-nox", make_args=[], timeout=30):
             return target_base, make_args, timeout
         target_base, make_args, timeout = run_qemu_kw(**kw)
 
         # Start QEMU
         pre_make()
-        self.qemu = QEMU(target_base + "-nox-gdb", *make_args)
+        self.qemu = QEMU(target_base + "-gdb", *make_args)
         self.gdb = None
 
         try:

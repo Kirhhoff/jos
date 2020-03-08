@@ -46,7 +46,10 @@
 #define NPTENTRIES	1024		// page table entries per page table
 
 #define PGSIZE		4096		// bytes mapped by a page
+#define LPGSIZE		(NPTENTRIES*PGSIZE) // bytes mapped by a large page
 #define PGSHIFT		12		// log2(PGSIZE)
+
+#define MAX_ORDER 10 		// log2(max continuous page frame number(1024) permitted to allocate)
 
 #define PTSIZE		(PGSIZE*NPTENTRIES) // bytes mapped by a page directory entry
 #define PTSHIFT		22		// log2(PTSIZE)
