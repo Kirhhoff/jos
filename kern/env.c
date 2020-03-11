@@ -125,8 +125,8 @@ env_init(void)
 		env->env_link=env+1;
 	}
 
-	// set next of final env to NULL
-	envs[NENV-1].env_link=NULL;
+	// set next of final env to the first
+	envs[NENV-1].env_link=envs;
 
 	// set golbal free start
 	env_free_list=envs;
@@ -536,6 +536,8 @@ env_pop_tf(struct Trapframe *tf)
 {
 	// Record the CPU we are running on for user-space debugging
 	curenv->env_cpunum = cpunum();
+
+	unlock_kernel();
 
 	asm volatile(
 		"\tmovl %0,%%esp\n"

@@ -45,6 +45,7 @@ i386_init(void)
 
 	// Acquire the big kernel lock before waking up APs
 	// Your code here:
+	lock_kernel();
 
 	// Starting non-boot CPUs
 	boot_aps();
@@ -56,6 +57,7 @@ i386_init(void)
 	// Touch all you want.
 	ENV_CREATE(user_primes, ENV_TYPE_USER);
 #endif // TEST*
+	// ENV_CREATE(user_dumbfork, ENV_TYPE_USER);
 
 	// Schedule and run the first user environment!
 	sched_yield();
@@ -98,9 +100,15 @@ void
 mp_main(void)
 {
 	// We are in high EIP now, safe to switch to kern_pgdir 
+#ifdef PSE_SUPPORT
+	// enable optional 4MB page
+	lcr4(rcr4()|CR4_PSE);
+#endif
+
 	lcr3(PADDR(kern_pgdir));
 	cprintf("SMP: CPU %d starting\n", cpunum());
 
+	msr_init(); // init MSRs for this cpu as each cpu has its own separated registers
 	lapic_init();
 	env_init_percpu();
 	trap_init_percpu();
@@ -111,9 +119,9 @@ mp_main(void)
 	// only one CPU can enter the scheduler at a time!
 	//
 	// Your code here:
+	lock_kernel();
 
-	// Remove this after you finish Exercise 6
-	for (;;);
+	sched_yield();
 }
 
 #define IA32_SYSENTER_CS (0x174)
@@ -129,7 +137,7 @@ static void msr_init(){
 	asm volatile("movl %%cs,%0":"=r"(cs));
 	wrmsr(IA32_SYSENTER_CS,0x0,cs)
 	wrmsr(IA32_SYSENTER_EIP,0x0,sysenter_handler)
-	wrmsr(IA32_SYSENTER_ESP,0x0,KSTACKTOP);
+	wrmsr(IA32_SYSENTER_ESP,0x0,KSTACKTOP-cpunum()*(KSTKGAP+KSTKSIZE)); // mp version
 }
 
 /*

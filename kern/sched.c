@@ -30,6 +30,34 @@ sched_yield(void)
 
 	// LAB 4: Your code here.
 
+	int start,i;
+
+	// start index of probing
+	// if curenv exists, start from
+	// its next, else start from 0
+	start=curenv?curenv-envs+1:0;
+	
+	// search for runnable env
+	for(i=0;i<NENV;i++)
+		if(envs[(start+i)%NENV].env_status==ENV_RUNNABLE)
+			break;
+
+	// if new process is found runnable
+	// run it
+	if (i<NENV)
+		env_run(&envs[(start+i)%NENV]);	
+
+	// no new process found runnable
+
+	// if current cpu has an process run and
+	// it's still running(which means, it's 
+	// still runnable), run it again
+	if(curenv&&curenv->env_status==ENV_RUNNING)
+		env_run(curenv);
+
+	// current process is also feasible
+	// halt the cpu
+
 	// sched_halt never returns
 	sched_halt();
 }

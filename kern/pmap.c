@@ -250,6 +250,9 @@ int setupkvm(pde_t* pgdir){
 	if(boot_map_region(pgdir,UENVS,UENVS_size,envs_pa,PTE_U)<0)
 		return -E_NO_MEM;
 
+	pgdir[PDX(MMIOBASE)]=kern_pgdir[PDX(MMIOBASE)];// map memory-mapped IO ports
+	pgdir[PDX(MMIOLIM)]=kern_pgdir[PDX(MMIOLIM)];// map kernel stacks for cpus 
+
 	//////////////////////////////////////////////////////////////////////
 	// Use the physical memory that 'bootstack' refers to as the kernel
 	// stack.  The kernel stack grows down from virtual address KSTACKTOP.
@@ -369,7 +372,28 @@ mem_init_mp(void)
 	//     Permissions: kernel RW, user NONE
 	//
 	// LAB 4: Your code here:
+	int cpui,kstackbase,kstackbottom_pa,pagei;
+	pte_t* pte;
+	for(cpui=0;cpui<NCPU;cpui++){
+		// va and pa with respect to 
+		// bottom of i'th cpu kernel stack
+		kstackbase=KSTACKTOP-(cpui+1)*(KSTKSIZE+KSTKGAP);
+		kstackbottom_pa=PADDR((void*)percpu_kstacks[cpui]);
 
+		// map stack content
+		boot_map_region(kern_pgdir,kstackbase+KSTKGAP,KSTKSIZE,kstackbottom_pa,PTE_W);
+
+		// map stack guard gaps
+		// pte set to 0 works as guard area
+		for(pagei=0;pagei<KSTKGAP;pagei+=PGSIZE){
+			// check for pte existence
+			if((pte=pgdir_walk(kern_pgdir,(void*)kstackbase+pagei,0))==0)
+				panic("pgdir_walk for kernel stack gap fails.");
+			
+			// clear it as guard area
+			*pte=0;
+		}	
+	}
 }
 
 // --------------------------------------------------------------
@@ -423,6 +447,10 @@ page_init(void)
 	//set allocated status
 	pages[0].pp_ref=1;
 	pages[0].pp_link=NULL;
+
+	pages[MPENTRY_PADDR/PGSIZE].pp_ref=1;
+	pages[MPENTRY_PADDR/PGSIZE].pp_link=NULL;
+	pages[MPENTRY_PADDR/PGSIZE-1].pp_link=&pages[MPENTRY_PADDR/PGSIZE+1];
 
 	//set allocated status
 	size_t i_start=IOPHYSMEM/PGSIZE,i_end=ROUNDUP(PADDR(boot_alloc(0)),KPGSIZE)/PGSIZE;
@@ -927,7 +955,18 @@ mmio_map_region(physaddr_t pa, size_t size)
 	// Hint: The staff solution uses boot_map_region.
 	//
 	// Your code here:
-	panic("mmio_map_region not implemented");
+	size=ROUNDUP(size,PGSIZE);
+	pa=ROUNDDOWN(pa,PGSIZE);
+
+	// bound check
+	if(base+size>=MMIOLIM)
+		panic("Memory-mapped address exceeds MMIOLIM.");
+	
+	boot_map_region(kern_pgdir,base,size,pa,PTE_W|PTE_PCD|PTE_PWT);
+	base+=size;
+	
+	// return address before increment
+	return (void*)(base-size);
 }
 
 static uintptr_t user_mem_check_addr;

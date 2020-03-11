@@ -62,9 +62,27 @@ static inline envid_t __attribute__((always_inline))
 sys_exofork(void)
 {
 	envid_t ret;
-	asm volatile("int %2"
-		     : "=a" (ret)
-		     : "a" (SYS_exofork), "i" (T_SYSCALL));
+
+	// save %ebp in %edi to restore it
+	// when child process returns
+	asm volatile("movl %%ebp,%%edi":::"%edi");
+	// save user space %esp in %ebp passed into sysenter_handler
+	asm volatile("movl %esp,%ebp");
+
+	// save user space %eip in %esi passed into sysenter_handler
+	asm volatile("leal .L%=,%%esi\n\t"
+				 "sysenter\n\t"
+				 ".L%=:"
+			:
+			: "a" (SYS_exofork)
+			: "%esi","memory");
+	
+	// retrieve return value
+	asm volatile("movl %%eax,%0":"=r"(ret));
+
+	// restore %ebp
+	asm volatile("movl %edi,%ebp");
+	
 	return ret;
 }
 

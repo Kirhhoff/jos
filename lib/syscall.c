@@ -29,8 +29,12 @@ syscall(int num, int check, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 	asm volatile("movl %0,%%edi"::"S"(a4):"%ebx");
 
 	// save user space %esp in %ebp passed into sysenter_handler
+	// also save the fifth parameter on the stack cuz there is no
+	// idle register to pass it
 	asm volatile("pushl %ebp");
+	asm volatile("pushl %0"::"S"(a5));
 	asm volatile("movl %esp,%ebp");
+	asm volatile("add $4,%ebp");
 
 	// save user space %eip in %esi passed into sysenter_handler
 	asm volatile("leal .syslabel,%%esi":::"%esi");

@@ -74,7 +74,8 @@
  sysenter_handler:
 
 	# prepare arguments for syscall
-	pushl $0x0 # only four parameters supported, 0x0 for the fifth
+	pushl -4(%ebp) # only four parameters supported to pass via register
+				   # pass the fifth via user stack
 	pushl %edi # arg4
 	pushl %ebx # arg3
 	pushl %ecx # arg2
