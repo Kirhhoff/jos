@@ -105,6 +105,9 @@ sys_exofork(void)
 	e->env_tf=curenv->env_tf;
 	e->env_tf.tf_regs.reg_eax=0;
 
+	// inherit parent's page fault handler
+	e->env_pgfault_upcall=curenv->env_pgfault_upcall;
+
 	return e->env_id;
 }
 
@@ -152,7 +155,15 @@ static int
 sys_env_set_pgfault_upcall(envid_t envid, void *func)
 {
 	// LAB 4: Your code here.
-	panic("sys_env_set_pgfault_upcall not implemented");
+	struct Env* e;
+	
+	// check envid permission
+	if(envid2env(envid,&e,1)<0)
+		return -E_BAD_ENV;
+	
+	e->env_pgfault_upcall=func;
+
+	return 0;
 }
 
 // Allocate a page of memory and map it at 'va' with permission
@@ -379,7 +390,7 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 	// save trapframe of current environment
 	// in curenv
 	save_curenv_trapframe();
-
+	
 	// Call the function corresponding to the 'syscallno' parameter.
 	// Return any appropriate return value.
 	// LAB 3: Your code here.
@@ -401,7 +412,6 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 		ret=sys_page_alloc(a1,(void*)a2,a3);
 		break;
 	case SYS_page_map:
-		cprintf("0x%x\n",a5);
 		ret=sys_page_map(a1,(void*)a2,a3,(void*)a4,a5);
 		break;
 	case SYS_page_unmap:
@@ -412,6 +422,9 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 		break;
 	case SYS_env_set_status:
 		ret=sys_env_set_status(a1,a2);
+		break;
+	case SYS_env_set_pgfault_upcall:
+		ret=sys_env_set_pgfault_upcall(a1,(void*)a2);
 		break;
 	case SYS_yield: 
 		sys_yield();
@@ -435,6 +448,7 @@ static inline
 void save_curenv_trapframe(){
 	asm volatile("mov %%esi,%0":"=a"(curenv->env_tf.tf_eip));
 	asm volatile("mov (%%ebp),%0":"=a"(curenv->env_tf.tf_esp));
+	asm volatile("mov (%1),%0":"=a"(curenv->env_tf.tf_regs.reg_ebp):"a"(curenv->env_tf.tf_esp));
 	asm volatile("mov 0xc(%%ebp),%0":"=a"(curenv->env_tf.tf_regs.reg_edx));
 	asm volatile("mov 0x10(%%ebp),%0":"=a"(curenv->env_tf.tf_regs.reg_ecx));
 	asm volatile("mov 0x14(%%ebp),%0":"=a"(curenv->env_tf.tf_regs.reg_ebx));

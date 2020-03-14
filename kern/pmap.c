@@ -743,15 +743,15 @@ page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
 	// check whether va is not mapped to pp;
 	// non-corner case
 	if(page2pa(pp)!=PTE_ADDR(*va_pte)){
-		if((*va_pte)&PTE_P){
+		if((*va_pte)&PTE_P)
 			page_remove(pgdir,va);
-			tlb_invalidate(pgdir,va);
-		}
 		pp->pp_ref++;
 	}
 	
 	// set up page table entry
 	*va_pte=(page2pa(pp)|perm|PTE_P);
+	// flush tlb is always necessary
+	tlb_invalidate(pgdir,va);
 	
 	return 0;
 }

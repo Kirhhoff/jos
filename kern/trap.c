@@ -353,7 +353,47 @@ page_fault_handler(struct Trapframe *tf)
 	//   (the 'tf' variable points at 'curenv->env_tf').
 
 	// LAB 4: Your code here.
+	struct PageInfo* pp;
+	struct UTrapframe* utf;
+	
+	// non-null page fault handler
+	if(curenv->env_pgfault_upcall!=0){
+		// assert function address legitimacy
+		user_mem_assert(curenv,(void*)curenv->env_pgfault_upcall,PGSIZE,0);
 
+		// create a new trapframe 		
+
+		// the following condition incidates that 
+		// this is a recursive page fault
+		// when %esp is [UXSTACKTOP-PGSIZE,UXSTACKTOP)
+		if(tf->tf_esp>=(UXSTACKTOP-PGSIZE)
+				&&tf->tf_esp<UXSTACKTOP)
+			// dedicate a word to accommodate eip 
+			utf=(struct UTrapframe*)(tf->tf_esp-sizeof(struct UTrapframe)-4);
+		else
+			utf=(struct UTrapframe*)(UXSTACKTOP-sizeof(struct UTrapframe));
+
+		// assert allocated utf is legitimate
+		user_mem_assert(curenv,(void*)utf,sizeof(struct UTrapframe),PTE_W);
+
+		// prepare exception trapframe
+		utf->utf_eflags=curenv->env_tf.tf_eflags;
+		utf->utf_eip=curenv->env_tf.tf_eip;
+		utf->utf_err=curenv->env_tf.tf_err;
+		utf->utf_esp=curenv->env_tf.tf_esp;
+		utf->utf_fault_va=fault_va;
+		utf->utf_regs=curenv->env_tf.tf_regs;
+
+		// make userspace run in handler 
+		// and esp point to exception stack 
+		// when it resumes
+		curenv->env_tf.tf_eip=(uintptr_t)curenv->env_pgfault_upcall;
+		curenv->env_tf.tf_esp=(uintptr_t)utf;
+
+		env_run(curenv);		
+	}
+	
+destroy:
 	// Destroy the environment that caused the fault.
 	cprintf("[%08x] user fault va %08x ip %08x\n",
 		curenv->env_id, fault_va, tf->tf_eip);

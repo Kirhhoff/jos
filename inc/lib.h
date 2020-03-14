@@ -63,9 +63,9 @@ sys_exofork(void)
 {
 	envid_t ret;
 
-	// save %ebp in %edi to restore it
+	// save %ebp on stack to restore it
 	// when child process returns
-	asm volatile("movl %%ebp,%%edi":::"%edi");
+	asm volatile("pushl %ebp");
 	// save user space %esp in %ebp passed into sysenter_handler
 	asm volatile("movl %esp,%ebp");
 
@@ -81,7 +81,7 @@ sys_exofork(void)
 	asm volatile("movl %%eax,%0":"=r"(ret));
 
 	// restore %ebp
-	asm volatile("movl %edi,%ebp");
+	asm volatile("popl %ebp");
 	
 	return ret;
 }
