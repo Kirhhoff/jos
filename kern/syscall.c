@@ -357,7 +357,51 @@ static int
 sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 {
 	// LAB 4: Your code here.
-	panic("sys_ipc_try_send not implemented");
+	struct Env* tarenv;
+	pte_t *srcpte,*dstpte;
+	struct PageInfo* pp;
+
+	// retrieve target env
+	if(envid2env(envid,&tarenv,0)<0)
+		return -E_BAD_ENV;
+	// assert target env is receiving
+	if(!tarenv->env_ipc_recving||tarenv->env_status!=ENV_NOT_RUNNABLE)
+		return -E_IPC_NOT_RECV;
+	
+	// whether receiver is receiving a page mapping
+	// if so, perform a series of securiy check of 
+	// srcva and finally insert it to target env's
+	// page mapping
+	if((uint32_t)tarenv->env_ipc_dstva<UTOP){
+		// verify srcva is legitimate and page-aligned
+		if((uint32_t)srcva>=UTOP||(uint32_t)srcva%PGSIZE!=0)
+			return -E_INVAL;
+		// verify srcva resides in curenv's page mapping
+		if((pp=page_lookup(curenv->env_pgdir,srcva,&srcpte))<0)
+			return -E_INVAL;
+		// check perm legitimacy
+		if((perm|PTE_SYSCALL)!=PTE_SYSCALL)
+			return -E_INVAL;
+		// check write permission grant
+		if((~*srcpte&PTE_W)&&(perm&PTE_W))
+			return -E_INVAL;
+		// perform page mapping insertion
+		if(page_insert(tarenv->env_pgdir,pp,tarenv->env_ipc_dstva,perm)<0)
+			return -E_NO_MEM;
+	}
+
+	// record informations
+	tarenv->env_ipc_from=curenv->env_id;
+	tarenv->env_ipc_value=value;
+
+	// reset target environment to runnable state
+	tarenv->env_ipc_recving=false;
+	tarenv->env_status=ENV_RUNNABLE;
+
+	// set return value for receiver
+	tarenv->env_tf.tf_regs.reg_eax=0;
+
+	return 0;
 }
 
 // Block until a value is ready.  Record that you want to receive
@@ -374,8 +418,28 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 static int
 sys_ipc_recv(void *dstva)
 {
-	// LAB 4: Your code here.
-	panic("sys_ipc_recv not implemented");
+	// first check whether expect to
+	// receive a page mapping
+	if((uint32_t)dstva<UTOP){
+		// if so, verify dstva page-aligned
+		if((uint32_t)dstva%PGSIZE!=0)
+			return -E_INVAL;
+		
+		curenv->env_ipc_dstva=dstva;		
+	}else
+		// (necessarily)set the field above UTOP
+		// rather than leave it 0x0
+		// to inform sender it does not 
+		// expect to receive a page mapping
+		curenv->env_ipc_dstva=(void*)~0;		
+
+	// mark itself waiting for ipc
+	curenv->env_ipc_recving=true;
+	curenv->env_status=ENV_NOT_RUNNABLE;
+
+	sched_yield();
+
+	// actually never reach here
 	return 0;
 }
 
@@ -384,6 +448,7 @@ int32_t
 syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5)
 {
 	int ret;
+	uint32_t eflags;
 
 	lock_kernel();
 
@@ -430,6 +495,12 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 		sys_yield();
 		ret= 0;
 		break;
+	case SYS_ipc_try_send:
+		ret=sys_ipc_try_send(a1,a2,(void*)a3,a4);
+		break;
+	case SYS_ipc_recv:
+		ret=sys_ipc_recv((void*)a1);
+		break;
 	default:
 		ret= -E_INVAL;
 	}
@@ -439,7 +510,18 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 	// and the env is resumed frorm its trapframe
 	curenv->env_tf.tf_regs.reg_eax=ret;
 
+	// read user eflags to restore it manually
+	// Here we must read and cache it on kernel
+	// stack before unlock kernel cuz curenv is
+	// a public memory resource, we are fobidden 
+	// to read it wihout holding kernel lock
+	eflags=curenv->env_tf.tf_eflags;
+
 	unlock_kernel();
+	
+	// restore user eflags with IF diabled
+	// (later enable it right before 'sysexit' instruction)
+	write_eflags(eflags&~FL_IF);
 
 	return ret;
 }
@@ -449,6 +531,7 @@ void save_curenv_trapframe(){
 	asm volatile("mov %%esi,%0":"=a"(curenv->env_tf.tf_eip));
 	asm volatile("mov (%%ebp),%0":"=a"(curenv->env_tf.tf_esp));
 	asm volatile("mov (%1),%0":"=a"(curenv->env_tf.tf_regs.reg_ebp):"a"(curenv->env_tf.tf_esp));
+	asm volatile("mov 4(%1),%0":"=a"(curenv->env_tf.tf_eflags):"a"(curenv->env_tf.tf_esp));
 	asm volatile("mov 0xc(%%ebp),%0":"=a"(curenv->env_tf.tf_regs.reg_edx));
 	asm volatile("mov 0x10(%%ebp),%0":"=a"(curenv->env_tf.tf_regs.reg_ecx));
 	asm volatile("mov 0x14(%%ebp),%0":"=a"(curenv->env_tf.tf_regs.reg_ebx));

@@ -89,9 +89,12 @@ struct Gatedesc {
 	// LAB 3: Your code here.
 	extern long int_handlers[][4];
 	for(int i=0;i<20;i++)
-		SETGATE(idt[i],STS_TG32,GD_KT,int_handlers[i],0);
-	SETGATE(idt[T_BRKPT],STS_TG32,GD_KT,int_handlers[T_BRKPT],3);
+		SETGATE(idt[i],0,GD_KT,int_handlers[i],0);
+	SETGATE(idt[T_BRKPT],0,GD_KT,int_handlers[T_BRKPT],3);
 
+	for(int i=0;i<=15;i++)
+		SETGATE(idt[IRQ_OFFSET+i],0,GD_KT,int_handlers[T_SIMDERR+1+i],0);
+	
 	// Per-CPU setup 
 	trap_init_percpu();
 }
@@ -234,7 +237,11 @@ trap_dispatch(struct Trapframe *tf)
 	// Handle clock interrupts. Don't forget to acknowledge the
 	// interrupt using lapic_eoi() before calling the scheduler!
 	// LAB 4: Your code here.
-
+	if (tf->tf_trapno == IRQ_OFFSET + IRQ_TIMER) {
+		lapic_eoi();
+		sched_yield();
+	}
+	
 	// Unexpected trap: The user process or the kernel has a bug.
 	print_trapframe(tf);
 	if (tf->tf_cs == GD_KT)

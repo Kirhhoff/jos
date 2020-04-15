@@ -63,8 +63,10 @@ sys_exofork(void)
 {
 	envid_t ret;
 
+	// save eflags
 	// save %ebp on stack to restore it
 	// when child process returns
+	asm volatile("pushfl");
 	asm volatile("pushl %ebp");
 	// save user space %esp in %ebp passed into sysenter_handler
 	asm volatile("movl %esp,%ebp");
@@ -80,8 +82,9 @@ sys_exofork(void)
 	// retrieve return value
 	asm volatile("movl %%eax,%0":"=r"(ret));
 
-	// restore %ebp
+	// restore %ebp and shift for eflags
 	asm volatile("popl %ebp");
+	asm volatile("add $0x4,%esp");
 	
 	return ret;
 }

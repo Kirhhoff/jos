@@ -44,8 +44,14 @@ sched_yield(void)
 
 	// if new process is found runnable
 	// run it
-	if (i<NENV)
+	if (i<NENV){
+		// if curenv is still running, mark it 
+		// runnable to allow it rerunning
+		if(curenv&&curenv->env_status==ENV_RUNNING)
+			curenv->env_status=ENV_RUNNABLE;
+		
 		env_run(&envs[(start+i)%NENV]);	
+	}
 
 	// no new process found runnable
 
@@ -103,7 +109,7 @@ sched_halt(void)
 		"pushl $0\n"
 		"pushl $0\n"
 		// Uncomment the following line after completing exercise 13
-		//"sti\n"
+		"sti\n"
 		"1:\n"
 		"hlt\n"
 		"jmp 1b\n"

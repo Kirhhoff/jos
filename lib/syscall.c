@@ -28,9 +28,11 @@ syscall(int num, int check, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 	asm volatile("movl %0,%%ebx"::"S"(a3):"%ebx");
 	asm volatile("movl %0,%%edi"::"S"(a4):"%ebx");
 
-	// save user space %esp in %ebp passed into sysenter_handler
-	// also save the fifth parameter on the stack cuz there is no
+	// 1. save eflags
+	// 2. save user space %esp in %ebp passed into sysenter_handler
+	// 3. save the fifth parameter on the stack cuz there is no
 	// idle register to pass it
+	asm volatile("pushfl");
 	asm volatile("pushl %ebp");
 	asm volatile("pushl %0"::"S"(a5));
 	asm volatile("add $4,%esp");
@@ -47,9 +49,10 @@ syscall(int num, int check, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 	// retrieve return value
 	asm volatile("movl %%eax,%0":"=r"(ret));
 	
-	// restore %ebp
+	// restore %ebp and shift for eflags
 	asm volatile("popl %ebp");
-	
+	asm volatile("add $0x4,%esp");
+
 	if(check && ret > 0)
 		panic("syscall %d returned %d (> 0)", num, ret);
 	return ret;
