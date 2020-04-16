@@ -45,4 +45,48 @@ unlock_kernel(void)
 	asm volatile("pause");
 }
 
+extern struct spinlock env_lock;
+
+static inline void
+lock_env()
+{
+	spin_lock(&env_lock);
+}
+
+static inline void
+unlock_env()
+{
+	spin_unlock(&env_lock);
+	asm volatile("pause");	
+}
+
+extern struct spinlock page_lock;
+
+static inline void
+lock_page()
+{
+	spin_lock(&page_lock);
+}
+
+static inline void
+unlock_page()
+{
+	spin_unlock(&page_lock);
+	asm volatile("pause");	
+}
+
+extern struct spinlock console_lock;
+
+static inline void
+lock_console()
+{
+	spin_lock(&console_lock);
+}
+
+static inline void
+unlock_console()
+{
+	spin_unlock(&console_lock);
+	asm volatile("pause");	
+}
 #endif

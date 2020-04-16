@@ -61,7 +61,9 @@ sys_env_destroy(envid_t envid)
 		cprintf("[%08x] exiting gracefully\n", curenv->env_id);
 	else
 		cprintf("[%08x] destroying %08x\n", curenv->env_id, e->env_id);
+	lock_env();
 	env_destroy(e);
+	unlock_env();
 	return 0;
 }
 
@@ -69,6 +71,7 @@ sys_env_destroy(envid_t envid)
 static void
 sys_yield(void)
 {
+	lock_env();
 	sched_yield();
 }
 
@@ -88,13 +91,17 @@ sys_exofork(void)
 	// LAB 4: Your code here.
 	struct Env* e;
 
-	// allocate empty env
-	if(env_alloc(&e,curenv->env_id)<0)
-		return -E_NO_FREE_ENV;
+	lock_env();
 
-	// set up kernel virtual memeory
-	if(setupkvm(e->env_pgdir)<0)
-		return -E_NO_MEM;
+	lock_page();
+	// allocate empty env
+	if(env_alloc(&e,curenv->env_id)<0){
+		unlock_page();
+		unlock_env();
+		return -E_NO_FREE_ENV;
+	}
+	unlock_page();
+
 
 	// mark child process as not runnable for the moment
 	e->env_status=ENV_NOT_RUNNABLE;
@@ -108,6 +115,15 @@ sys_exofork(void)
 	// inherit parent's page fault handler
 	e->env_pgfault_upcall=curenv->env_pgfault_upcall;
 
+	unlock_env();
+
+	lock_page();	
+	// set up kernel virtual memeory
+	if(setupkvm(e->env_pgdir)<0){
+		unlock_page();
+		return -E_NO_MEM;
+	}
+	unlock_page();
 	return e->env_id;
 }
 
@@ -137,9 +153,9 @@ sys_env_set_status(envid_t envid, int status)
 	// retrieve env with permission checked
 	if(envid2env(envid,&e,1)<0)
 		return -E_BAD_ENV;
-	
+	lock_env();
 	e->env_status=status;
-
+	unlock_env();
 	return 0;	
 }
 
@@ -208,16 +224,23 @@ sys_page_alloc(envid_t envid, void *va, int perm)
 	if(envid2env(envid,&e,1)<0)
 		return -E_BAD_ENV;
 	
+	lock_page();
+
 	// allocate page
-	if((pp=page_alloc(ALLOC_ZERO))==0)
+	if((pp=page_alloc(ALLOC_ZERO))==0){
+		unlock_page();
 		return -E_NO_MEM;
+	}
 	
 	// insert
 	if((err=page_insert(e->env_pgdir,pp,va,perm|PTE_U|PTE_P))<0){
 		// free allocated page before return with error
 		page_free(pp);
+		unlock_page();
 		return err;
 	}
+
+	unlock_page();
 
 	return 0;
 }
@@ -271,19 +294,28 @@ sys_page_map(envid_t srcenvid, void *srcva,
 		||((uint32_t)dstva%PGSIZE)!=0)
 		return -E_INVAL;
 	
+	lock_page();
+
 	// check src already has mapping for srcva
-	if((pp=page_lookup(srce->env_pgdir,srcva,&pte))==0)
+	if((pp=page_lookup(srce->env_pgdir,srcva,&pte))==0){
+		unlock_page();
 		return -E_INVAL;
+	}
 	
 	// verify that src grant write
 	// permission only when it is granted that
-	if(((~*pte)&PTE_W)&&(perm&PTE_W))
+	if(((~*pte)&PTE_W)&&(perm&PTE_W)){
+		unlock_page();
 		return -E_INVAL;
+	}
 	
 	// perform mapping
-	if((errno=page_insert(dste->env_pgdir,pp,dstva,perm|PTE_U|PTE_P))<0)
+	if((errno=page_insert(dste->env_pgdir,pp,dstva,perm|PTE_U|PTE_P))<0){
+		unlock_page();
 		return errno;
+	}
 
+	unlock_page();
 	return 0;
 }
 
@@ -310,7 +342,9 @@ sys_page_unmap(envid_t envid, void *va)
 	if(envid2env(envid,&e,1)<0)
 		return -E_BAD_ENV;
 
+	lock_page();
 	page_remove(e->env_pgdir,va);
+	unlock_page();
 
 	return 0;	
 }
@@ -364,30 +398,34 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 	// retrieve target env
 	if(envid2env(envid,&tarenv,0)<0)
 		return -E_BAD_ENV;
+	lock_env();
 	// assert target env is receiving
-	if(!tarenv->env_ipc_recving||tarenv->env_status!=ENV_NOT_RUNNABLE)
+	if(!tarenv->env_ipc_recving||tarenv->env_status!=ENV_NOT_RUNNABLE){
+		unlock_env();
 		return -E_IPC_NOT_RECV;
+	}
 	
 	// whether receiver is receiving a page mapping
 	// if so, perform a series of securiy check of 
 	// srcva and finally insert it to target env's
 	// page mapping
 	if((uint32_t)tarenv->env_ipc_dstva<UTOP){
-		// verify srcva is legitimate and page-aligned
-		if((uint32_t)srcva>=UTOP||(uint32_t)srcva%PGSIZE!=0)
+		lock_page();
+		if(((uint32_t)srcva>=UTOP||(uint32_t)srcva%PGSIZE!=0)// verify srcva is legitimate and page-aligned
+				||((pp=page_lookup(curenv->env_pgdir,srcva,&srcpte))<0)// verify srcva resides in curenv's page mapping
+				||((perm|PTE_SYSCALL)!=PTE_SYSCALL)// check perm legitimacy
+				||((~*srcpte&PTE_W)&&(perm&PTE_W))){// check write permission grant
+			unlock_page();
+			unlock_env();
 			return -E_INVAL;
-		// verify srcva resides in curenv's page mapping
-		if((pp=page_lookup(curenv->env_pgdir,srcva,&srcpte))<0)
-			return -E_INVAL;
-		// check perm legitimacy
-		if((perm|PTE_SYSCALL)!=PTE_SYSCALL)
-			return -E_INVAL;
-		// check write permission grant
-		if((~*srcpte&PTE_W)&&(perm&PTE_W))
-			return -E_INVAL;
+		}
 		// perform page mapping insertion
-		if(page_insert(tarenv->env_pgdir,pp,tarenv->env_ipc_dstva,perm)<0)
+		if(page_insert(tarenv->env_pgdir,pp,tarenv->env_ipc_dstva,perm)<0){
+			unlock_page();
+			unlock_env();
 			return -E_NO_MEM;
+		}
+		unlock_page();
 	}
 
 	// record informations
@@ -400,7 +438,7 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 
 	// set return value for receiver
 	tarenv->env_tf.tf_regs.reg_eax=0;
-
+	unlock_env();
 	return 0;
 }
 
@@ -418,12 +456,17 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 static int
 sys_ipc_recv(void *dstva)
 {
+
+	lock_env();
+
 	// first check whether expect to
 	// receive a page mapping
 	if((uint32_t)dstva<UTOP){
 		// if so, verify dstva page-aligned
-		if((uint32_t)dstva%PGSIZE!=0)
+		if((uint32_t)dstva%PGSIZE!=0){
+			unlock_env();
 			return -E_INVAL;
+		}
 		
 		curenv->env_ipc_dstva=dstva;		
 	}else
@@ -450,8 +493,17 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 	int ret;
 	uint32_t eflags;
 
-	lock_kernel();
-
+	// Garbage collect if current enviroment is a zombie
+	lock_env();
+	if (curenv->env_status == ENV_DYING) {
+		lock_page();
+		env_free(curenv);
+		unlock_page();
+		curenv = NULL;
+		sched_yield();
+	}
+	unlock_env();
+	
 	// save trapframe of current environment
 	// in curenv
 	save_curenv_trapframe();
@@ -517,8 +569,6 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 	// to read it wihout holding kernel lock
 	eflags=curenv->env_tf.tf_eflags;
 
-	unlock_kernel();
-	
 	// restore user eflags with IF diabled
 	// (later enable it right before 'sysexit' instruction)
 	write_eflags(eflags&~FL_IF);

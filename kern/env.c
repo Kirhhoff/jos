@@ -89,10 +89,14 @@ envid2env(envid_t envid, struct Env **env_store, bool checkperm)
 	// (i.e., does not refer to a _previous_ environment
 	// that used the same slot in the envs[] array).
 	e = &envs[ENVX(envid)];
+	lock_env();
 	if (e->env_status == ENV_FREE || e->env_id != envid) {
 		*env_store = 0;
+		unlock_env();
 		return -E_BAD_ENV;
 	}
+
+	unlock_env();
 
 	// Check that the calling environment has legitimate permission
 	// to manipulate the specified environment.
@@ -392,10 +396,11 @@ load_icode(struct Env *e, uint8_t *binary)
 	// program's memory size(rather than file size
 	// as file size is smaller than memory size due
 	// to segments like .bss)
+	lock_page();
 	for(ph=ph_start;ph<ph_end;ph++)
 		if(ph->p_type==ELF_PROG_LOAD)
 			region_alloc(e,(void*)(ph->p_va),ph->p_memsz);
-
+	unlock_page();
 	// switch to env pgdir to access virtual address of phs
 	lcr3(PADDR(e->env_pgdir));
 
@@ -419,7 +424,9 @@ load_icode(struct Env *e, uint8_t *binary)
 	// at virtual address USTACKTOP - PGSIZE.
 
 	// LAB 3: Your code here.
+	lock_page();
 	region_alloc(e,(void*)(USTACKTOP-PGSIZE),PGSIZE);
+	unlock_page();
 }
 
 //
@@ -436,10 +443,14 @@ env_create(uint8_t *binary, enum EnvType type)
 	int errno;
 	struct Env* e;
 
+	lock_page();
 	// allocate a new env
-	if((errno=env_alloc(&e,0))<0)
+	if((errno=env_alloc(&e,0))<0){
+		unlock_page();
 		panic("panic %e",errno);
-	
+	}
+	unlock_page();
+
 	// set env type
 	e->env_type=type;
 	
@@ -517,7 +528,9 @@ env_destroy(struct Env *e)
 		return;
 	}
 
+	lock_page();
 	env_free(e);
+	unlock_page();
 
 	if (curenv == e) {
 		curenv = NULL;
@@ -537,8 +550,7 @@ env_pop_tf(struct Trapframe *tf)
 {
 	// Record the CPU we are running on for user-space debugging
 	curenv->env_cpunum = cpunum();
-
-	unlock_kernel();
+	unlock_env();
 
 	asm volatile(
 		"\tmovl %0,%%esp\n"

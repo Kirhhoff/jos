@@ -207,17 +207,7 @@ trap_dispatch(struct Trapframe *tf)
 	case T_BRKPT:
 		monitor(tf);
 		tf->tf_eip++;
-		env_pop_tf(tf);
-		break;
-
-	case T_SYSCALL:
-		tf->tf_regs.reg_eax=syscall(
-				tf->tf_regs.reg_eax,	// sysno
-				tf->tf_regs.reg_edx,	// arg0
-				tf->tf_regs.reg_ecx,	// arg1
-				tf->tf_regs.reg_ebx,	// arg2 
-				tf->tf_regs.reg_edi,	// arg3
-				tf->tf_regs.reg_esi);	// arg4
+		lock_env();
 		env_pop_tf(tf);
 		break;
 
@@ -239,6 +229,7 @@ trap_dispatch(struct Trapframe *tf)
 	// LAB 4: Your code here.
 	if (tf->tf_trapno == IRQ_OFFSET + IRQ_TIMER) {
 		lapic_eoi();
+		lock_env();
 		sched_yield();
 	}
 	
@@ -247,7 +238,9 @@ trap_dispatch(struct Trapframe *tf)
 	if (tf->tf_cs == GD_KT)
 		panic("unhandled trap in kernel");
 	else {
+		lock_env();
 		env_destroy(curenv);
+		unlock_env();
 		return;
 	}
 }
@@ -266,8 +259,6 @@ trap(struct Trapframe *tf)
 
 	// Re-acqurie the big kernel lock if we were halted in
 	// sched_yield()
-	if (xchg(&thiscpu->cpu_status, CPU_STARTED) == CPU_HALTED)
-		lock_kernel();
 	// Check that interrupts are disabled.  If this assertion
 	// fails, DO NOT be tempted to fix it by inserting a "cli" in
 	// the interrupt path.
@@ -280,15 +271,18 @@ trap(struct Trapframe *tf)
 		// LAB 4: Your code here.
 		assert(curenv);
 
-		lock_kernel();
+		lock_env();
 
 		// Garbage collect if current enviroment is a zombie
 		if (curenv->env_status == ENV_DYING) {
+			lock_page();
 			env_free(curenv);
+			unlock_page();
 			curenv = NULL;
 			sched_yield();
 		}
 
+		unlock_env();
 		// Copy trap frame (which is currently on the stack)
 		// into 'curenv->env_tf', so that running the environment
 		// will restart at the trap point.
@@ -307,6 +301,7 @@ trap(struct Trapframe *tf)
 	// If we made it to this point, then no other environment was
 	// scheduled, so we should return to the current environment
 	// if doing so makes sense.
+	lock_env();
 	if (curenv && curenv->env_status == ENV_RUNNING)
 		env_run(curenv);
 	else
@@ -397,6 +392,7 @@ page_fault_handler(struct Trapframe *tf)
 		curenv->env_tf.tf_eip=(uintptr_t)curenv->env_pgfault_upcall;
 		curenv->env_tf.tf_esp=(uintptr_t)utf;
 
+		lock_env();
 		env_run(curenv);		
 	}
 	
@@ -405,6 +401,8 @@ destroy:
 	cprintf("[%08x] user fault va %08x ip %08x\n",
 		curenv->env_id, fault_va, tf->tf_eip);
 	print_trapframe(tf);
+	lock_env();
 	env_destroy(curenv);
+	unlock_env();
 }
 
