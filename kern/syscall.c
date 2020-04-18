@@ -398,10 +398,10 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 	// retrieve target env
 	if(envid2env(envid,&tarenv,0)<0)
 		return -E_BAD_ENV;
-	lock_env();
+	lock_ipc();
 	// assert target env is receiving
 	if(!tarenv->env_ipc_recving||tarenv->env_status!=ENV_NOT_RUNNABLE){
-		unlock_env();
+		unlock_ipc();
 		return -E_IPC_NOT_RECV;
 	}
 	
@@ -416,13 +416,13 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 				||((perm|PTE_SYSCALL)!=PTE_SYSCALL)// check perm legitimacy
 				||((~*srcpte&PTE_W)&&(perm&PTE_W))){// check write permission grant
 			unlock_page();
-			unlock_env();
+			unlock_ipc();
 			return -E_INVAL;
 		}
 		// perform page mapping insertion
 		if(page_insert(tarenv->env_pgdir,pp,tarenv->env_ipc_dstva,perm)<0){
 			unlock_page();
-			unlock_env();
+			unlock_ipc();
 			return -E_NO_MEM;
 		}
 		unlock_page();
@@ -438,7 +438,7 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 
 	// set return value for receiver
 	tarenv->env_tf.tf_regs.reg_eax=0;
-	unlock_env();
+	unlock_ipc();
 	return 0;
 }
 
@@ -458,12 +458,14 @@ sys_ipc_recv(void *dstva)
 {
 
 	lock_env();
+	lock_ipc();
 
 	// first check whether expect to
 	// receive a page mapping
 	if((uint32_t)dstva<UTOP){
 		// if so, verify dstva page-aligned
 		if((uint32_t)dstva%PGSIZE!=0){
+			unlock_ipc();
 			unlock_env();
 			return -E_INVAL;
 		}
@@ -479,6 +481,7 @@ sys_ipc_recv(void *dstva)
 	// mark itself waiting for ipc
 	curenv->env_ipc_recving=true;
 	curenv->env_status=ENV_NOT_RUNNABLE;
+	unlock_ipc();
 
 	sched_yield();
 

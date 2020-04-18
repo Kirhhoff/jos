@@ -89,4 +89,19 @@ unlock_console()
 	spin_unlock(&console_lock);
 	asm volatile("pause");	
 }
+
+extern struct spinlock ipc_lock;
+
+static inline void
+lock_ipc()
+{
+	spin_lock(&ipc_lock);
+}
+
+static inline void
+unlock_ipc()
+{
+	spin_unlock(&ipc_lock);
+	asm volatile("pause");	
+}
 #endif
