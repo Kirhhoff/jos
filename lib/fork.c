@@ -117,7 +117,7 @@ fork(void)
 	set_pgfault_handler(pgfault);
 
 	// perform fork
-	if((childid=sys_exofork())<0)
+	if((childid=sys_fork(end))<0)
 		return -1;
 
 	// child process
@@ -128,29 +128,6 @@ fork(void)
 		return 0;
 	}
 
-	// this following is parent process
-
-	// it's necessary to duplicate stack page first
-	// cuz that's the most frequently written page
-	duppage(childid,ROUNDDOWN((uint32_t)&addr,PGSIZE)/PGSIZE);
-
-	// allocate exception stack for child process
-	// and copy to it with PTE_W directly set
-	if(sys_page_alloc(0,(void*)PFTEMP,PTE_W)<0)
-		panic("Fail to allocate page");
-	memmove((void*)PFTEMP,(void*)(UXSTACKTOP-PGSIZE),PGSIZE);
-	if(sys_page_map(0,(void*)PFTEMP,childid,(void*)(UXSTACKTOP-PGSIZE),PTE_W)<0)
-		panic("Fail to map page");
-	if(sys_page_unmap(0,(void*)PFTEMP)<0)
-		panic("Fail to unmap page");
-
-	// duplicate all other pages
-	for(addr=0;addr<(uint32_t)end;addr+=PGSIZE)
-		duppage(childid,addr/PGSIZE);
-	
-	// mark child process as runnable
-	sys_env_set_status(childid,ENV_RUNNABLE);
-	
 	return childid;
 }
 

@@ -74,6 +74,160 @@ sys_yield(void)
 	lock_env();
 	sched_yield();
 }
+static struct Env* fork_exofork(void);
+static int fork_page_map(struct Env* dstenv,void *srcva,void *dstva, int perm);
+static int fork_duppage(struct Env* childenv, void* addr);
+static int fork_page_alloc(struct Env* e, void *va, int perm);
+
+static envid_t
+sys_fork(unsigned char end[])
+{
+	uint32_t addr;
+	int err;
+	struct Env* childenv;
+
+	lock_env();
+	lock_page();
+
+	// create env for child process
+	if((childenv=fork_exofork())==0){
+		unlock_page();
+		unlock_env();
+		return -E_NO_MEM;
+	}
+	
+	// duplicate stack page
+	fork_duppage(childenv,(void*)ROUNDDOWN(curenv->env_tf.tf_esp,PGSIZE));
+	
+	// allocate exception stack for child process
+	// and copy to it with PTE_W directly set
+
+	if((err=fork_page_alloc(curenv,(void*)PFTEMP,PTE_W))<0){
+		unlock_page();
+		unlock_env();
+		return err;
+	}
+
+	memmove((void*)PFTEMP,(void*)(UXSTACKTOP-PGSIZE),PGSIZE);
+
+	if((err=fork_page_map(childenv,(void*)PFTEMP,(void*)(UXSTACKTOP-PGSIZE),PTE_W))<0){
+		unlock_page();
+		unlock_env();	
+		return err;
+	}
+
+	page_remove(curenv->env_pgdir,(void*)PFTEMP);
+
+	// duplicate all other pages
+	for(addr=0;addr<(uint32_t)end;addr+=PGSIZE)
+		fork_duppage(childenv,(void*)addr);
+	
+	// mark child process as runnable
+	childenv->env_status=ENV_RUNNABLE;
+
+	unlock_page();
+	unlock_env();
+
+	return childenv->env_id;
+}
+
+static struct Env*
+fork_exofork(void)
+{
+	struct Env* e;
+
+	// allocate empty env
+	if(env_alloc(&e,curenv->env_id)<0)
+		return 0;
+
+	// child process has the same register states
+	// except for %eax, which implies the return value,
+	// 0 for child process
+	e->env_tf=curenv->env_tf;
+	e->env_tf.tf_regs.reg_eax=0;
+
+	// inherit parent's page fault handler
+	e->env_pgfault_upcall=curenv->env_pgfault_upcall;
+
+	// set up kernel virtual memeory
+	if(setupkvm(e->env_pgdir)<0){
+		env_free(e);
+		return 0;
+	}
+	
+	return e;
+}
+
+static int
+fork_page_map(struct Env* dstenv,void *srcva,void *dstva, int perm)
+{
+	struct PageInfo* pp;
+	pte_t *pte;
+	int err;
+	
+	// check va arrange legitimacy
+	// and page-aligned
+	if((uint32_t)srcva>=UTOP
+		||(uint32_t)dstva>=UTOP
+		||((uint32_t)srcva%PGSIZE)!=0
+		||((uint32_t)dstva%PGSIZE)!=0)
+		return -E_INVAL;
+	
+	// check src already has mapping for srcva
+	if((pp=page_lookup(curenv->env_pgdir,srcva,&pte))==0)
+		return -E_INVAL;
+	
+	// perform mapping
+	if((err=page_insert(dstenv->env_pgdir,pp,dstva,perm|PTE_U|PTE_P))<0)
+		return err;
+
+	return 0;
+}
+
+static int
+fork_duppage(struct Env* childenv, void* addr)
+{
+	// LAB 4: Your code here.
+	pte_t pte=*pgdir_walk(curenv->env_pgdir,addr,0);
+	int err;
+
+	// duppage only if the page is present and belongs to user
+	if((pte&PTE_P)&&(pte&PTE_U)){
+		if((pte&PTE_W)||(pte&PTE_COW)){
+			if((err=fork_page_map(childenv,addr,addr,PTE_COW))<0)
+				return err;
+			if((pte&PTE_W)&&!(pte&PTE_COW)){
+				if((err=fork_page_map(curenv,addr,addr,PTE_COW))<0)
+					return err;
+			}
+		}else{
+			if((err=fork_page_map(childenv,addr,addr,0))<0)
+				return err;
+		}
+	}	
+	
+	return 0;
+}
+
+static int
+fork_page_alloc(struct Env* e, void *va, int perm)
+{
+	struct PageInfo* pp;
+	int err;
+
+	// allocate page
+	if((pp=page_alloc(ALLOC_ZERO))==0)
+		return -E_NO_MEM;
+	
+	// insert
+	if((err=page_insert(e->env_pgdir,pp,va,perm|PTE_U|PTE_P))<0){
+		// free allocated page before return with error
+		page_free(pp);
+		return err;
+	}
+
+	return 0;
+}
 
 // Allocate a new environment.
 // Returns envid of new environment, or < 0 on error.  Errors are:
@@ -539,6 +693,9 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 		break;
 	case SYS_exofork:
 		ret=sys_exofork();
+		break;
+	case SYS_fork:
+		ret=sys_fork((unsigned char*)a1);
 		break;
 	case SYS_env_set_status:
 		ret=sys_env_set_status(a1,a2);

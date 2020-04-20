@@ -89,6 +89,7 @@ sys_exofork(void)
 	return ret;
 }
 
+int sys_fork(unsigned char end[]);
 // ipc.c
 void	ipc_send(envid_t to_env, uint32_t value, void *pg, int perm);
 int32_t ipc_recv(envid_t *from_env_store, void *pg, int *perm_store);
