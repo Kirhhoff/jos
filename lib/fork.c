@@ -14,10 +14,11 @@
 static void
 pgfault(struct UTrapframe *utf)
 {
+	extern volatile pte_t uvpt[];
 	void *addr = (void *) utf->utf_fault_va;
 	uint32_t err = utf->utf_err;
-	int r;
-
+	void *tmp,*origin;
+	
 	// Check that the faulting access was (1) a write, and (2) to a
 	// copy-on-write page.  If not, panic.
 	// Hint:
@@ -25,6 +26,9 @@ pgfault(struct UTrapframe *utf)
 	//   (see <inc/memlayout.h>).
 
 	// LAB 4: Your code here.
+	// verify write operation and COW bit
+	if(!(err&FEC_WR)||!(uvpt[((uint32_t)addr)>>PGSHIFT]&PTE_COW))
+		panic("error");
 
 	// Allocate a new page, map it at a temporary location (PFTEMP),
 	// copy the data from the old page to the new page, then move the new
@@ -33,8 +37,20 @@ pgfault(struct UTrapframe *utf)
 	//   You should make three system calls.
 
 	// LAB 4: Your code here.
+	tmp=(void*)PFTEMP;
+	origin=(void*)ROUNDDOWN((uint32_t)addr,PGSIZE);
 
-	panic("pgfault not implemented");
+	// allocate a page onto tmp region to accommodate copied page
+	if(sys_page_alloc(0,tmp,PTE_W)<0)
+		panic("error");
+	// copy original page to tmp region
+	memmove(tmp,origin,PGSIZE);
+	// map original va to newly copyied page
+	if(sys_page_map(0,tmp,0,origin,PTE_W)<0)
+		panic("error");
+	// unmap tmp, finish copy-on-write
+	if(sys_page_unmap(0,tmp)<0)
+		panic("error");
 }
 
 //
@@ -51,10 +67,24 @@ pgfault(struct UTrapframe *utf)
 static int
 duppage(envid_t envid, unsigned pn)
 {
-	int r;
-
 	// LAB 4: Your code here.
-	panic("duppage not implemented");
+	extern volatile pte_t uvpt[];
+	void* addr=(void*)(pn*PGSIZE);
+	pte_t pte=uvpt[pn];
+
+	// duppage only if the page is present and belongs to user
+	if((pte&PTE_P)&&(pte&PTE_U)){
+		if((pte&PTE_W)||(pte&PTE_COW)){
+			if(sys_page_map(0,addr,envid,addr,PTE_COW)<0)
+				panic("error");
+			if(sys_page_map(0,addr,0,addr,PTE_COW)<0)
+				panic("error");
+		}else{
+			if(sys_page_map(0,addr,envid,addr,0)<0)
+				panic("error");
+		}
+	}	
+	
 	return 0;
 }
 
@@ -78,7 +108,27 @@ envid_t
 fork(void)
 {
 	// LAB 4: Your code here.
-	panic("fork not implemented");
+	extern unsigned char end[];
+	envid_t childid;
+	uint32_t addr;
+	
+	// set handler every time
+	// to ensure it non-null
+	set_pgfault_handler(pgfault);
+
+	// perform fork
+	if((childid=sys_fork(end))<0)
+		return -1;
+
+	// child process
+	if(childid==0){
+		// update thisenv global variable
+		thisenv=&envs[ENVX(sys_getenvid())];
+
+		return 0;
+	}
+
+	return childid;
 }
 
 // Challenge!

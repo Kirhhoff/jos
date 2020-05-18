@@ -65,14 +65,36 @@ static const char *trapname(int trapno)
 	return "(unknown trap)";
 }
 
+#define INT_DEFINE(name) \
+	void name();
 
 void
 trap_init(void)
 {
+	// Gate descriptors for interrupts and traps
+struct Gatedesc {
+	unsigned gd_off_15_0 : 16;   // low 16 bits of offset in segment
+	unsigned gd_sel : 16;        // segment selector
+	unsigned gd_args : 5;        // # args, 0 for interrupt/trap gates
+	unsigned gd_rsv1 : 3;        // reserved(should be zero I guess)
+	unsigned gd_type : 4;        // type(STS_{TG,IG32,TG32})
+	unsigned gd_s : 1;           // must be 0 (system)
+	unsigned gd_dpl : 2;         // descriptor(meaning new) privilege level
+	unsigned gd_p : 1;           // Present
+	unsigned gd_off_31_16 : 16;  // high bits of offset in segment
+};
 	extern struct Segdesc gdt[];
-
+	
+	
 	// LAB 3: Your code here.
+	extern long int_handlers[][4];
+	for(int i=0;i<20;i++)
+		SETGATE(idt[i],0,GD_KT,int_handlers[i],0);
+	SETGATE(idt[T_BRKPT],0,GD_KT,int_handlers[T_BRKPT],3);
 
+	for(int i=0;i<=15;i++)
+		SETGATE(idt[IRQ_OFFSET+i],0,GD_KT,int_handlers[T_SIMDERR+1+i],0);
+	
 	// Per-CPU setup 
 	trap_init_percpu();
 }
@@ -108,18 +130,18 @@ trap_init_percpu(void)
 
 	// Setup a TSS so that we get the right stack
 	// when we trap to the kernel.
-	ts.ts_esp0 = KSTACKTOP;
-	ts.ts_ss0 = GD_KD;
-	ts.ts_iomb = sizeof(struct Taskstate);
+	thiscpu->cpu_ts.ts_esp0=KSTACKTOP-cpunum()*(KSTKSIZE+KSTKGAP);
+	thiscpu->cpu_ts.ts_ss0=GD_KD;
+	thiscpu->cpu_ts.ts_iomb=sizeof(struct Taskstate);
 
 	// Initialize the TSS slot of the gdt.
-	gdt[GD_TSS0 >> 3] = SEG16(STS_T32A, (uint32_t) (&ts),
-					sizeof(struct Taskstate) - 1, 0);
-	gdt[GD_TSS0 >> 3].sd_s = 0;
+	gdt[(GD_TSS0>>3)+cpunum()]=SEG16(STS_T32A,(uint32_t)&thiscpu->cpu_ts,
+						sizeof(struct Taskstate),0);
+	gdt[(GD_TSS0>>3)+cpunum()].sd_s=0;
 
 	// Load the TSS selector (like other segment selectors, the
 	// bottom three bits are special; we leave them 0)
-	ltr(GD_TSS0);
+	ltr(GD_TSS0+cpunum()*sizeof(struct Segdesc));
 
 	// Load the IDT
 	lidt(&idt_pd);
@@ -176,6 +198,22 @@ trap_dispatch(struct Trapframe *tf)
 {
 	// Handle processor exceptions.
 	// LAB 3: Your code here.
+	switch (tf->tf_trapno)
+	{
+	case T_PGFLT:
+		page_fault_handler(tf);
+		break;
+
+	case T_BRKPT:
+		monitor(tf);
+		tf->tf_eip++;
+		lock_env();
+		env_pop_tf(tf);
+		break;
+
+	default:
+		break;
+	}
 
 	// Handle spurious interrupts
 	// The hardware sometimes raises these because of noise on the
@@ -190,15 +228,25 @@ trap_dispatch(struct Trapframe *tf)
 	// interrupt using lapic_eoi() before calling the scheduler!
 	// LAB 4: Your code here.
 
+	if (tf->tf_trapno == IRQ_OFFSET + IRQ_TIMER) {
+		lapic_eoi();
+		lock_env();
+		sched_yield();
+	}
+
 	// Handle keyboard and serial interrupts.
 	// LAB 5: Your code here.
 
+
+	
 	// Unexpected trap: The user process or the kernel has a bug.
 	print_trapframe(tf);
 	if (tf->tf_cs == GD_KT)
 		panic("unhandled trap in kernel");
 	else {
+		lock_env();
 		env_destroy(curenv);
+		unlock_env();
 		return;
 	}
 }
@@ -217,8 +265,6 @@ trap(struct Trapframe *tf)
 
 	// Re-acqurie the big kernel lock if we were halted in
 	// sched_yield()
-	if (xchg(&thiscpu->cpu_status, CPU_STARTED) == CPU_HALTED)
-		lock_kernel();
 	// Check that interrupts are disabled.  If this assertion
 	// fails, DO NOT be tempted to fix it by inserting a "cli" in
 	// the interrupt path.
@@ -231,13 +277,18 @@ trap(struct Trapframe *tf)
 		// LAB 4: Your code here.
 		assert(curenv);
 
+		lock_env();
+
 		// Garbage collect if current enviroment is a zombie
 		if (curenv->env_status == ENV_DYING) {
+			lock_page();
 			env_free(curenv);
+			unlock_page();
 			curenv = NULL;
 			sched_yield();
 		}
 
+		unlock_env();
 		// Copy trap frame (which is currently on the stack)
 		// into 'curenv->env_tf', so that running the environment
 		// will restart at the trap point.
@@ -256,6 +307,7 @@ trap(struct Trapframe *tf)
 	// If we made it to this point, then no other environment was
 	// scheduled, so we should return to the current environment
 	// if doing so makes sense.
+	lock_env();
 	if (curenv && curenv->env_status == ENV_RUNNING)
 		env_run(curenv);
 	else
@@ -272,9 +324,10 @@ page_fault_handler(struct Trapframe *tf)
 	fault_va = rcr2();
 
 	// Handle kernel-mode page faults.
-
 	// LAB 3: Your code here.
-
+	if(!(tf->tf_cs&0x3))
+		panic("Kernel page fault\n");
+	
 	// We've already handled kernel-mode exceptions, so if we get here,
 	// the page fault happened in user mode.
 
@@ -308,11 +361,54 @@ page_fault_handler(struct Trapframe *tf)
 	//   (the 'tf' variable points at 'curenv->env_tf').
 
 	// LAB 4: Your code here.
+	struct PageInfo* pp;
+	struct UTrapframe* utf;
+	
+	// non-null page fault handler
+	if(curenv->env_pgfault_upcall!=0){
+		// assert function address legitimacy
+		user_mem_assert(curenv,(void*)curenv->env_pgfault_upcall,PGSIZE,0);
 
+		// create a new trapframe 		
+
+		// the following condition incidates that 
+		// this is a recursive page fault
+		// when %esp is [UXSTACKTOP-PGSIZE,UXSTACKTOP)
+		if(tf->tf_esp>=(UXSTACKTOP-PGSIZE)
+				&&tf->tf_esp<UXSTACKTOP)
+			// dedicate a word to accommodate eip 
+			utf=(struct UTrapframe*)(tf->tf_esp-sizeof(struct UTrapframe)-4);
+		else
+			utf=(struct UTrapframe*)(UXSTACKTOP-sizeof(struct UTrapframe));
+
+		// assert allocated utf is legitimate
+		user_mem_assert(curenv,(void*)utf,sizeof(struct UTrapframe),PTE_W);
+
+		// prepare exception trapframe
+		utf->utf_eflags=curenv->env_tf.tf_eflags;
+		utf->utf_eip=curenv->env_tf.tf_eip;
+		utf->utf_err=curenv->env_tf.tf_err;
+		utf->utf_esp=curenv->env_tf.tf_esp;
+		utf->utf_fault_va=fault_va;
+		utf->utf_regs=curenv->env_tf.tf_regs;
+
+		// make userspace run in handler 
+		// and esp point to exception stack 
+		// when it resumes
+		curenv->env_tf.tf_eip=(uintptr_t)curenv->env_pgfault_upcall;
+		curenv->env_tf.tf_esp=(uintptr_t)utf;
+
+		lock_env();
+		env_run(curenv);		
+	}
+	
+destroy:
 	// Destroy the environment that caused the fault.
 	cprintf("[%08x] user fault va %08x ip %08x\n",
 		curenv->env_id, fault_va, tf->tf_eip);
 	print_trapframe(tf);
+	lock_env();
 	env_destroy(curenv);
+	unlock_env();
 }
 

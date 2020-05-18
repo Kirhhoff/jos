@@ -3,7 +3,6 @@
 #include <inc/stdio.h>
 #include <inc/string.h>
 #include <inc/assert.h>
-
 #include <kern/monitor.h>
 #include <kern/console.h>
 #include <kern/pmap.h>
@@ -17,6 +16,7 @@
 
 static void boot_aps(void);
 
+static void msr_init();
 
 void
 i386_init(void)
@@ -29,7 +29,9 @@ i386_init(void)
 
 	// Lab 2 memory management initialization functions
 	mem_init();
-
+	
+	msr_init();
+	
 	// Lab 3 user environment initialization functions
 	env_init();
 	trap_init();
@@ -43,7 +45,7 @@ i386_init(void)
 
 	// Acquire the big kernel lock before waking up APs
 	// Your code here:
-
+	lock_env();
 	// Starting non-boot CPUs
 	boot_aps();
 
@@ -57,6 +59,7 @@ i386_init(void)
 	// Touch all you want.
 	ENV_CREATE(user_icode, ENV_TYPE_USER);
 #endif // TEST*
+	// ENV_CREATE(user_dumbfork, ENV_TYPE_USER);
 
 	// Should not be necessary - drains keyboard because interrupt has given up.
 	kbd_intr();
@@ -102,9 +105,15 @@ void
 mp_main(void)
 {
 	// We are in high EIP now, safe to switch to kern_pgdir 
+#ifdef PSE_SUPPORT
+	// enable optional 4MB page
+	lcr4(rcr4()|CR4_PSE);
+#endif
+
 	lcr3(PADDR(kern_pgdir));
 	cprintf("SMP: CPU %d starting\n", cpunum());
 
+	msr_init(); // init MSRs for this cpu as each cpu has its own separated registers
 	lapic_init();
 	env_init_percpu();
 	trap_init_percpu();
@@ -115,9 +124,24 @@ mp_main(void)
 	// only one CPU can enter the scheduler at a time!
 	//
 	// Your code here:
+	lock_env();
+	sched_yield();
+}
 
-	// Remove this after you finish Exercise 6
-	for (;;);
+#define IA32_SYSENTER_CS (0x174)
+#define IA32_SYSENTER_EIP (0x176)
+#define IA32_SYSENTER_ESP (0x175)
+
+#define wrmsr(msr,dx_val,ax_val) \
+	asm volatile\
+	("wrmsr"::"c"(msr),"d"(dx_val),"a"(ax_val));
+static void msr_init(){
+	extern void sysenter_handler();
+	uint32_t cs;
+	asm volatile("movl %%cs,%0":"=r"(cs));
+	wrmsr(IA32_SYSENTER_CS,0x0,cs)
+	wrmsr(IA32_SYSENTER_EIP,0x0,sysenter_handler)
+	wrmsr(IA32_SYSENTER_ESP,0x0,KSTACKTOP-cpunum()*(KSTKGAP+KSTKSIZE)); // mp version
 }
 
 /*

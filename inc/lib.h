@@ -42,6 +42,9 @@ void	set_pgfault_handler(void (*handler)(struct UTrapframe *utf));
 char*	readline(const char *buf);
 
 // syscall.c
+static int32_t
+syscall(int num, int check, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5)
+    __attribute__((noinline));
 void	sys_cputs(const char *string, size_t len);
 int	sys_cgetc(void);
 envid_t	sys_getenvid(void);
@@ -63,12 +66,34 @@ static inline envid_t __attribute__((always_inline))
 sys_exofork(void)
 {
 	envid_t ret;
-	asm volatile("int %2"
-		     : "=a" (ret)
-		     : "a" (SYS_exofork), "i" (T_SYSCALL));
+
+	// save eflags
+	// save %ebp on stack to restore it
+	// when child process returns
+	asm volatile("pushfl");
+	asm volatile("pushl %ebp");
+	// save user space %esp in %ebp passed into sysenter_handler
+	asm volatile("movl %esp,%ebp");
+
+	// save user space %eip in %esi passed into sysenter_handler
+	asm volatile("leal .L%=,%%esi\n\t"
+				 "sysenter\n\t"
+				 ".L%=:"
+			:
+			: "a" (SYS_exofork)
+			: "%esi","memory");
+	
+	// retrieve return value
+	asm volatile("movl %%eax,%0":"=r"(ret));
+
+	// restore %ebp and shift for eflags
+	asm volatile("popl %ebp");
+	asm volatile("add $0x4,%esp");
+	
 	return ret;
 }
 
+int sys_fork(unsigned char end[]);
 // ipc.c
 void	ipc_send(envid_t to_env, uint32_t value, void *pg, int perm);
 int32_t ipc_recv(envid_t *from_env_store, void *pg, int *perm_store);

@@ -16,6 +16,29 @@ struct spinlock kernel_lock = {
 #endif
 };
 
+struct spinlock env_lock={
+#ifdef DEBUG_SPINLOCK
+	.name = "env_lock"
+#endif
+};
+
+struct spinlock page_lock={
+#ifdef DEBUG_SPINLOCK
+	.name = "page_lock"
+#endif
+};
+
+struct spinlock console_lock={
+#ifdef DEBUG_SPINLOCK
+	.name = "console_lock"
+#endif
+};
+
+struct spinlock ipc_lock={
+#ifdef DEBUG_SPINLOCK
+	.name = "ipc_lock"
+#endif
+};
 #ifdef DEBUG_SPINLOCK
 // Record the current call stack in pcs[] by following the %ebp chain.
 static void

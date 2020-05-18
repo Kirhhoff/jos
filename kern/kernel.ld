@@ -46,7 +46,15 @@ SECTIONS
 	.data : {
 		*(.data .data.*)
 	}
+/*
+	PROVIDE(edata = .);
 
+	.bss : {
+		*(.bss)
+	}
+
+	PROVIDE(end = .);
+*/
 	.bss : {
 		PROVIDE(edata = .);
 		*(.dynbss)
@@ -54,7 +62,6 @@ SECTIONS
 		*(COMMON)
 		PROVIDE(end = .);
 	}
-
 
 	/DISCARD/ : {
 		*(.eh_frame .note.GNU-stack .comment .note)

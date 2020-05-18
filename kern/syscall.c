@@ -11,6 +11,7 @@
 #include <kern/syscall.h>
 #include <kern/console.h>
 #include <kern/sched.h>
+#include <kern/spinlock.h>
 
 // Print a string to the system console.
 // The string is exactly 'len' characters long.
@@ -22,6 +23,7 @@ sys_cputs(const char *s, size_t len)
 	// Destroy the environment if not.
 
 	// LAB 3: Your code here.
+	user_mem_assert(curenv,(void*)s,len,PTE_U);
 
 	// Print the string supplied by the user.
 	cprintf("%.*s", len, s);
@@ -55,7 +57,13 @@ sys_env_destroy(envid_t envid)
 
 	if ((r = envid2env(envid, &e, 1)) < 0)
 		return r;
+	if (e == curenv)
+		cprintf("[%08x] exiting gracefully\n", curenv->env_id);
+	else
+		cprintf("[%08x] destroying %08x\n", curenv->env_id, e->env_id);
+	lock_env();
 	env_destroy(e);
+	unlock_env();
 	return 0;
 }
 
@@ -63,7 +71,162 @@ sys_env_destroy(envid_t envid)
 static void
 sys_yield(void)
 {
+	lock_env();
 	sched_yield();
+}
+static struct Env* fork_exofork(void);
+static int fork_page_map(struct Env* dstenv,void *srcva,void *dstva, int perm);
+static int fork_duppage(struct Env* childenv, void* addr);
+static int fork_page_alloc(struct Env* e, void *va, int perm);
+
+static envid_t
+sys_fork(unsigned char end[])
+{
+	uint32_t addr;
+	int err;
+	struct Env* childenv;
+
+	lock_env();
+	lock_page();
+
+	// create env for child process
+	if((childenv=fork_exofork())==0){
+		unlock_page();
+		unlock_env();
+		return -E_NO_MEM;
+	}
+	
+	// duplicate stack page
+	fork_duppage(childenv,(void*)ROUNDDOWN(curenv->env_tf.tf_esp,PGSIZE));
+	
+	// allocate exception stack for child process
+	// and copy to it with PTE_W directly set
+
+	if((err=fork_page_alloc(curenv,(void*)PFTEMP,PTE_W))<0){
+		unlock_page();
+		unlock_env();
+		return err;
+	}
+
+	memmove((void*)PFTEMP,(void*)(UXSTACKTOP-PGSIZE),PGSIZE);
+
+	if((err=fork_page_map(childenv,(void*)PFTEMP,(void*)(UXSTACKTOP-PGSIZE),PTE_W))<0){
+		unlock_page();
+		unlock_env();	
+		return err;
+	}
+
+	page_remove(curenv->env_pgdir,(void*)PFTEMP);
+
+	// duplicate all other pages
+	for(addr=0;addr<(uint32_t)end;addr+=PGSIZE)
+		fork_duppage(childenv,(void*)addr);
+	
+	// mark child process as runnable
+	childenv->env_status=ENV_RUNNABLE;
+
+	unlock_page();
+	unlock_env();
+
+	return childenv->env_id;
+}
+
+static struct Env*
+fork_exofork(void)
+{
+	struct Env* e;
+
+	// allocate empty env
+	if(env_alloc(&e,curenv->env_id)<0)
+		return 0;
+
+	// child process has the same register states
+	// except for %eax, which implies the return value,
+	// 0 for child process
+	e->env_tf=curenv->env_tf;
+	e->env_tf.tf_regs.reg_eax=0;
+
+	// inherit parent's page fault handler
+	e->env_pgfault_upcall=curenv->env_pgfault_upcall;
+
+	// set up kernel virtual memeory
+	if(setupkvm(e->env_pgdir)<0){
+		env_free(e);
+		return 0;
+	}
+	
+	return e;
+}
+
+static int
+fork_page_map(struct Env* dstenv,void *srcva,void *dstva, int perm)
+{
+	struct PageInfo* pp;
+	pte_t *pte;
+	int err;
+	
+	// check va arrange legitimacy
+	// and page-aligned
+	if((uint32_t)srcva>=UTOP
+		||(uint32_t)dstva>=UTOP
+		||((uint32_t)srcva%PGSIZE)!=0
+		||((uint32_t)dstva%PGSIZE)!=0)
+		return -E_INVAL;
+	
+	// check src already has mapping for srcva
+	if((pp=page_lookup(curenv->env_pgdir,srcva,&pte))==0)
+		return -E_INVAL;
+	
+	// perform mapping
+	if((err=page_insert(dstenv->env_pgdir,pp,dstva,perm|PTE_U|PTE_P))<0)
+		return err;
+
+	return 0;
+}
+
+static int
+fork_duppage(struct Env* childenv, void* addr)
+{
+	// LAB 4: Your code here.
+	pte_t pte=*pgdir_walk(curenv->env_pgdir,addr,0);
+	int err;
+
+	// duppage only if the page is present and belongs to user
+	if((pte&PTE_P)&&(pte&PTE_U)){
+		if((pte&PTE_W)||(pte&PTE_COW)){
+			if((err=fork_page_map(childenv,addr,addr,PTE_COW))<0)
+				return err;
+			if((pte&PTE_W)&&!(pte&PTE_COW)){
+				if((err=fork_page_map(curenv,addr,addr,PTE_COW))<0)
+					return err;
+			}
+		}else{
+			if((err=fork_page_map(childenv,addr,addr,0))<0)
+				return err;
+		}
+	}	
+	
+	return 0;
+}
+
+static int
+fork_page_alloc(struct Env* e, void *va, int perm)
+{
+	struct PageInfo* pp;
+	int err;
+
+	// allocate page
+	if((pp=page_alloc(ALLOC_ZERO))==0)
+		return -E_NO_MEM;
+	
+	// insert
+	if((err=page_insert(e->env_pgdir,pp,va,perm|PTE_U|PTE_P))<0){
+		// free allocated page before return with error
+		page_free(pp);
+		return err;
+	}
+
+	return 0;
 }
 
 // Allocate a new environment.
@@ -80,7 +243,42 @@ sys_exofork(void)
 	// will appear to return 0.
 
 	// LAB 4: Your code here.
-	panic("sys_exofork not implemented");
+	struct Env* e;
+
+	lock_env();
+
+	lock_page();
+	// allocate empty env
+	if(env_alloc(&e,curenv->env_id)<0){
+		unlock_page();
+		unlock_env();
+		return -E_NO_FREE_ENV;
+	}
+	unlock_page();
+
+
+	// mark child process as not runnable for the moment
+	e->env_status=ENV_NOT_RUNNABLE;
+
+	// child process has the same register states
+	// except for %eax, which implies the return value,
+	// 0 for child process
+	e->env_tf=curenv->env_tf;
+	e->env_tf.tf_regs.reg_eax=0;
+
+	// inherit parent's page fault handler
+	e->env_pgfault_upcall=curenv->env_pgfault_upcall;
+
+	unlock_env();
+
+	lock_page();	
+	// set up kernel virtual memeory
+	if(setupkvm(e->env_pgdir)<0){
+		unlock_page();
+		return -E_NO_MEM;
+	}
+	unlock_page();
+	return e->env_id;
 }
 
 // Set envid's env_status to status, which must be ENV_RUNNABLE
@@ -100,7 +298,19 @@ sys_env_set_status(envid_t envid, int status)
 	// envid's status.
 
 	// LAB 4: Your code here.
-	panic("sys_env_set_status not implemented");
+	struct Env* e;
+
+	// check status legitimacy
+	if(status!=ENV_RUNNABLE&&status!=ENV_NOT_RUNNABLE)
+		return -E_INVAL;
+	
+	// retrieve env with permission checked
+	if(envid2env(envid,&e,1)<0)
+		return -E_BAD_ENV;
+	lock_env();
+	e->env_status=status;
+	unlock_env();
+	return 0;	
 }
 
 // Set envid's trap frame to 'tf'.
@@ -131,7 +341,15 @@ static int
 sys_env_set_pgfault_upcall(envid_t envid, void *func)
 {
 	// LAB 4: Your code here.
-	panic("sys_env_set_pgfault_upcall not implemented");
+	struct Env* e;
+	
+	// check envid permission
+	if(envid2env(envid,&e,1)<0)
+		return -E_BAD_ENV;
+	
+	e->env_pgfault_upcall=func;
+
+	return 0;
 }
 
 // Allocate a page of memory and map it at 'va' with permission
@@ -161,7 +379,40 @@ sys_page_alloc(envid_t envid, void *va, int perm)
 	//   allocated!
 
 	// LAB 4: Your code here.
-	panic("sys_page_alloc not implemented");
+	struct Env* e;
+	struct PageInfo* pp;
+	pte_t* pte;
+	int err;
+
+	// check va and perm legitimacy
+	if((uint32_t)va>=UTOP
+		||((uint32_t)va%PGSIZE)!=0
+		||(perm|PTE_SYSCALL)!=PTE_SYSCALL)
+		return -E_INVAL;
+
+	// retrieve env with permission checked
+	if(envid2env(envid,&e,1)<0)
+		return -E_BAD_ENV;
+	
+	lock_page();
+
+	// allocate page
+	if((pp=page_alloc(ALLOC_ZERO))==0){
+		unlock_page();
+		return -E_NO_MEM;
+	}
+	
+	// insert
+	if((err=page_insert(e->env_pgdir,pp,va,perm|PTE_U|PTE_P))<0){
+		// free allocated page before return with error
+		page_free(pp);
+		unlock_page();
+		return err;
+	}
+
+	unlock_page();
+
+	return 0;
 }
 
 // Map the page of memory at 'srcva' in srcenvid's address space
@@ -192,7 +443,50 @@ sys_page_map(envid_t srcenvid, void *srcva,
 	//   check the current permissions on the page.
 
 	// LAB 4: Your code here.
-	panic("sys_page_map not implemented");
+	struct Env *srce,*dste;
+	struct PageInfo* pp;
+	pte_t *pte;
+	int errno;
+	
+	// check basic permission legitimacy
+	if((perm|PTE_SYSCALL)!=PTE_SYSCALL)
+		return -E_INVAL;
+
+	// retrieve envs with permission checked
+	if(envid2env(srcenvid,&srce,1)<0||envid2env(dstenvid,&dste,1)<0)
+		return -E_BAD_ENV;
+	
+	// check va arrange legitimacy
+	// and page-aligned
+	if((uint32_t)srcva>=UTOP
+		||(uint32_t)dstva>=UTOP
+		||((uint32_t)srcva%PGSIZE)!=0
+		||((uint32_t)dstva%PGSIZE)!=0)
+		return -E_INVAL;
+	
+	lock_page();
+
+	// check src already has mapping for srcva
+	if((pp=page_lookup(srce->env_pgdir,srcva,&pte))==0){
+		unlock_page();
+		return -E_INVAL;
+	}
+	
+	// verify that src grant write
+	// permission only when it is granted that
+	if(((~*pte)&PTE_W)&&(perm&PTE_W)){
+		unlock_page();
+		return -E_INVAL;
+	}
+	
+	// perform mapping
+	if((errno=page_insert(dste->env_pgdir,pp,dstva,perm|PTE_U|PTE_P))<0){
+		unlock_page();
+		return errno;
+	}
+
+	unlock_page();
+	return 0;
 }
 
 // Unmap the page of memory at 'va' in the address space of 'envid'.
@@ -208,7 +502,21 @@ sys_page_unmap(envid_t envid, void *va)
 	// Hint: This function is a wrapper around page_remove().
 
 	// LAB 4: Your code here.
-	panic("sys_page_unmap not implemented");
+	struct Env* e;
+
+	// check va legitimacy and page-aligned
+	if((uint32_t)va>=UTOP||((uint32_t)va%PGSIZE)!=0)
+		return -E_INVAL;
+
+	// retrieve env with permission checked
+	if(envid2env(envid,&e,1)<0)
+		return -E_BAD_ENV;
+
+	lock_page();
+	page_remove(e->env_pgdir,va);
+	unlock_page();
+
+	return 0;	
 }
 
 // Try to send 'value' to the target env 'envid'.
@@ -253,7 +561,55 @@ static int
 sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 {
 	// LAB 4: Your code here.
-	panic("sys_ipc_try_send not implemented");
+	struct Env* tarenv;
+	pte_t *srcpte,*dstpte;
+	struct PageInfo* pp;
+
+	// retrieve target env
+	if(envid2env(envid,&tarenv,0)<0)
+		return -E_BAD_ENV;
+	lock_ipc();
+	// assert target env is receiving
+	if(!tarenv->env_ipc_recving||tarenv->env_status!=ENV_NOT_RUNNABLE){
+		unlock_ipc();
+		return -E_IPC_NOT_RECV;
+	}
+	
+	// whether receiver is receiving a page mapping
+	// if so, perform a series of securiy check of 
+	// srcva and finally insert it to target env's
+	// page mapping
+	if((uint32_t)tarenv->env_ipc_dstva<UTOP){
+		lock_page();
+		if(((uint32_t)srcva>=UTOP||(uint32_t)srcva%PGSIZE!=0)// verify srcva is legitimate and page-aligned
+				||((pp=page_lookup(curenv->env_pgdir,srcva,&srcpte))<0)// verify srcva resides in curenv's page mapping
+				||((perm|PTE_SYSCALL)!=PTE_SYSCALL)// check perm legitimacy
+				||((~*srcpte&PTE_W)&&(perm&PTE_W))){// check write permission grant
+			unlock_page();
+			unlock_ipc();
+			return -E_INVAL;
+		}
+		// perform page mapping insertion
+		if(page_insert(tarenv->env_pgdir,pp,tarenv->env_ipc_dstva,perm)<0){
+			unlock_page();
+			unlock_ipc();
+			return -E_NO_MEM;
+		}
+		unlock_page();
+	}
+
+	// record informations
+	tarenv->env_ipc_from=curenv->env_id;
+	tarenv->env_ipc_value=value;
+
+	// reset target environment to runnable state
+	tarenv->env_ipc_recving=false;
+	tarenv->env_status=ENV_RUNNABLE;
+
+	// set return value for receiver
+	tarenv->env_tf.tf_regs.reg_eax=0;
+	unlock_ipc();
+	return 0;
 }
 
 // Block until a value is ready.  Record that you want to receive
@@ -270,8 +626,36 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 static int
 sys_ipc_recv(void *dstva)
 {
-	// LAB 4: Your code here.
-	panic("sys_ipc_recv not implemented");
+
+	lock_env();
+	lock_ipc();
+
+	// first check whether expect to
+	// receive a page mapping
+	if((uint32_t)dstva<UTOP){
+		// if so, verify dstva page-aligned
+		if((uint32_t)dstva%PGSIZE!=0){
+			unlock_ipc();
+			unlock_env();
+			return -E_INVAL;
+		}
+		
+		curenv->env_ipc_dstva=dstva;		
+	}else
+		// (necessarily)set the field above UTOP
+		// rather than leave it 0x0
+		// to inform sender it does not 
+		// expect to receive a page mapping
+		curenv->env_ipc_dstva=(void*)~0;		
+
+	// mark itself waiting for ipc
+	curenv->env_ipc_recving=true;
+	curenv->env_status=ENV_NOT_RUNNABLE;
+	unlock_ipc();
+
+	sched_yield();
+
+	// actually never reach here
 	return 0;
 }
 
@@ -279,15 +663,105 @@ sys_ipc_recv(void *dstva)
 int32_t
 syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5)
 {
+	int ret;
+	uint32_t eflags;
+
+	// Garbage collect if current enviroment is a zombie
+	lock_env();
+	if (curenv->env_status == ENV_DYING) {
+		lock_page();
+		env_free(curenv);
+		unlock_page();
+		curenv = NULL;
+		sched_yield();
+	}
+	unlock_env();
+	
+	// save trapframe of current environment
+	// in curenv
+	save_curenv_trapframe();
+	
 	// Call the function corresponding to the 'syscallno' parameter.
 	// Return any appropriate return value.
 	// LAB 3: Your code here.
-
-	panic("syscall not implemented");
-
 	switch (syscallno) {
+	case SYS_cputs:	
+		sys_cputs((char*)a1,a2);
+		ret=0;
+		break;
+	case SYS_cgetc: 
+		ret=sys_cgetc();
+		break;
+	case SYS_getenvid: 
+		ret=sys_getenvid();
+		break;
+	case SYS_env_destroy: 
+		ret= sys_env_destroy(a1);
+		break;
+	case SYS_page_alloc:
+		ret=sys_page_alloc(a1,(void*)a2,a3);
+		break;
+	case SYS_page_map:
+		ret=sys_page_map(a1,(void*)a2,a3,(void*)a4,a5);
+		break;
+	case SYS_page_unmap:
+		ret=sys_page_unmap(a1,(void*)a2);
+		break;
+	case SYS_exofork:
+		ret=sys_exofork();
+		break;
+	case SYS_fork:
+		ret=sys_fork((unsigned char*)a1);
+		break;
+	case SYS_env_set_status:
+		ret=sys_env_set_status(a1,a2);
+		break;
+	case SYS_env_set_pgfault_upcall:
+		ret=sys_env_set_pgfault_upcall(a1,(void*)a2);
+		break;
+	case SYS_yield: 
+		sys_yield();
+		ret= 0;
+		break;
+	case SYS_ipc_try_send:
+		ret=sys_ipc_try_send(a1,a2,(void*)a3,a4);
+		break;
+	case SYS_ipc_recv:
+		ret=sys_ipc_recv((void*)a1);
+		break;
 	default:
-		return -E_INVAL;
+		ret= -E_INVAL;
 	}
+
+	// save return value in env's trapframe
+	// in case that this function doesn't return
+	// and the env is resumed frorm its trapframe
+	curenv->env_tf.tf_regs.reg_eax=ret;
+
+	// read user eflags to restore it manually
+	// Here we must read and cache it on kernel
+	// stack before unlock kernel cuz curenv is
+	// a public memory resource, we are fobidden 
+	// to read it wihout holding kernel lock
+	eflags=curenv->env_tf.tf_eflags;
+
+	// restore user eflags with IF diabled
+	// (later enable it right before 'sysexit' instruction)
+	write_eflags(eflags&~FL_IF);
+
+	return ret;
 }
 
+static inline 
+void save_curenv_trapframe(){
+	asm volatile("mov %%esi,%0":"=a"(curenv->env_tf.tf_eip));
+	asm volatile("mov (%%ebp),%0":"=a"(curenv->env_tf.tf_esp));
+	asm volatile("mov (%1),%0":"=a"(curenv->env_tf.tf_regs.reg_ebp):"a"(curenv->env_tf.tf_esp));
+	asm volatile("mov 4(%1),%0":"=a"(curenv->env_tf.tf_eflags):"a"(curenv->env_tf.tf_esp));
+	asm volatile("mov 0xc(%%ebp),%0":"=a"(curenv->env_tf.tf_regs.reg_edx));
+	asm volatile("mov 0x10(%%ebp),%0":"=a"(curenv->env_tf.tf_regs.reg_ecx));
+	asm volatile("mov 0x14(%%ebp),%0":"=a"(curenv->env_tf.tf_regs.reg_ebx));
+	asm volatile("mov 0x18(%%ebp),%0":"=a"(curenv->env_tf.tf_regs.reg_edi));
+	asm volatile("mov %%es,%0":"=a"(curenv->env_tf.tf_es));
+	asm volatile("mov %%ds,%0":"=a"(curenv->env_tf.tf_ds));
+}
