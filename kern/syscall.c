@@ -119,8 +119,12 @@ sys_fork(unsigned char end[])
 	page_remove(curenv->env_pgdir,(void*)PFTEMP);
 
 	// duplicate all other pages
-	for(addr=0;addr<(uint32_t)end;addr+=PGSIZE)
-		fork_duppage(childenv,(void*)addr);
+	for(addr=0;addr<(uint32_t)UTOP-PGSIZE;addr+=PGSIZE){
+		if(addr==ROUNDDOWN(curenv->env_tf.tf_esp,PGSIZE))
+			continue;
+		if((err=fork_duppage(childenv,(void*)addr))<0)
+			return err;
+	}
 	
 	// mark child process as runnable
 	childenv->env_status=ENV_RUNNABLE;
@@ -188,21 +192,29 @@ static int
 fork_duppage(struct Env* childenv, void* addr)
 {
 	// LAB 4: Your code here.
-	pte_t pte=*pgdir_walk(curenv->env_pgdir,addr,0);
+	pte_t* pte=pgdir_walk(curenv->env_pgdir,addr,0);
 	int err;
 
+	if (!pte)
+		return 0;
+
 	// duppage only if the page is present and belongs to user
-	if((pte&PTE_P)&&(pte&PTE_U)){
-		if((pte&PTE_W)||(pte&PTE_COW)){
-			if((err=fork_page_map(childenv,addr,addr,PTE_COW))<0)
+	if((*pte&PTE_P)&&(*pte&PTE_U)){
+		if(*pte&PTE_SHARE){
+			if((err=fork_page_map(childenv,addr,addr,(*pte&PTE_SYSCALL)|PTE_SHARE))<0)
 				return err;
-			if((pte&PTE_W)&&!(pte&PTE_COW)){
-				if((err=fork_page_map(curenv,addr,addr,PTE_COW))<0)
+		}else{
+			if((*pte&PTE_W)||(*pte&PTE_COW)){
+				if((err=fork_page_map(childenv,addr,addr,PTE_COW))<0)
+					return err;
+				if((*pte&PTE_W)&&!(*pte&PTE_COW)){
+					if((err=fork_page_map(curenv,addr,addr,PTE_COW))<0)
+						return err;
+				}
+			}else{
+				if((err=fork_page_map(childenv,addr,addr,0))<0)
 					return err;
 			}
-		}else{
-			if((err=fork_page_map(childenv,addr,addr,0))<0)
-				return err;
 		}
 	}	
 	
@@ -326,7 +338,16 @@ sys_env_set_trapframe(envid_t envid, struct Trapframe *tf)
 	// LAB 5: Your code here.
 	// Remember to check whether the user has supplied us with a good
 	// address!
-	panic("sys_env_set_trapframe not implemented");
+
+	if((uint32_t)tf>=UTOP-sizeof(*tf))
+		return -E_INVAL;
+
+	struct Env* e;
+	if(envid2env(envid,&e,1)<0)
+		return -E_BAD_ENV;
+	
+	e->env_tf=*tf;
+	return 0;
 }
 
 // Set the page fault upcall for 'envid' by modifying the corresponding struct
@@ -574,7 +595,16 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 		unlock_ipc();
 		return -E_IPC_NOT_RECV;
 	}
-	
+
+	// record informations
+	tarenv->env_ipc_from=curenv->env_id;
+	tarenv->env_ipc_perm=perm;
+	tarenv->env_ipc_value=value;
+
+	// reset target environment to runnable state
+	tarenv->env_ipc_recving=false;
+	tarenv->env_status=ENV_RUNNABLE;
+
 	// whether receiver is receiving a page mapping
 	// if so, perform a series of securiy check of 
 	// srcva and finally insert it to target env's
@@ -598,16 +628,6 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 		unlock_page();
 	}
 
-	// record informations
-	tarenv->env_ipc_from=curenv->env_id;
-	tarenv->env_ipc_value=value;
-
-	// reset target environment to runnable state
-	tarenv->env_ipc_recving=false;
-	tarenv->env_status=ENV_RUNNABLE;
-
-	// set return value for receiver
-	tarenv->env_tf.tf_regs.reg_eax=0;
 	unlock_ipc();
 	return 0;
 }
@@ -715,6 +735,9 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 		break;
 	case SYS_env_set_status:
 		ret=sys_env_set_status(a1,a2);
+		break;
+	case SYS_env_set_trapframe:
+		ret=sys_env_set_trapframe(a1,(struct Trapframe*)a2);
 		break;
 	case SYS_env_set_pgfault_upcall:
 		ret=sys_env_set_pgfault_upcall(a1,(void*)a2);

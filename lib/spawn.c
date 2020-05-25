@@ -21,7 +21,7 @@ spawn(const char *prog, const char **argv)
 {
 	unsigned char elf_buf[512];
 	struct Trapframe child_tf;
-	envid_t child;
+	volatile envid_t child;
 
 	int fd, i, r;
 	struct Elf *elf;
@@ -129,7 +129,7 @@ spawn(const char *prog, const char **argv)
 	if ((r = copy_shared_pages(child)) < 0)
 		panic("copy_shared_pages: %e", r);
 
-	child_tf.tf_eflags |= FL_IOPL_3;   // devious: see user/faultio.c
+	// child_tf.tf_eflags |= FL_IOPL_3;   // devious: see user/faultio.c
 	if ((r = sys_env_set_trapframe(child, &child_tf)) < 0)
 		panic("sys_env_set_trapframe: %e", r);
 
@@ -184,12 +184,13 @@ spawnl(const char *prog, const char *arg0, ...)
 // to the initial stack pointer with which the child should start.
 // Returns < 0 on failure.
 static int
-init_stack(envid_t child, const char **argv, uintptr_t *init_esp)
+init_stack(volatile envid_t child_value, const char **argv, uintptr_t *init_esp)
 {
 	size_t string_size;
 	int argc, i, r;
 	char *string_store;
 	uintptr_t *argv_store;
+	volatile envid_t child=child_value;
 
 	// Count the number of arguments (argc)
 	// and the total amount of space needed for strings (string_size).
@@ -301,7 +302,21 @@ map_segment(envid_t child, uintptr_t va, size_t memsz,
 static int
 copy_shared_pages(envid_t child)
 {
+	extern unsigned char end[];
+	pte_t pte;
+	int r;
 	// LAB 5: Your code here.
+	for(uint32_t addr=0;addr<(uint32_t)UTOP;addr+=PGSIZE){
+		if(!(uvpd[PDX((void*)addr)]&PTE_P))
+			continue;
+		pte=uvpt[PGNUM((void*)addr)];
+		if((pte&PTE_SHARE)
+		&&(pte&PTE_P)
+		&&(pte&PTE_U)
+		&&((r=sys_page_map(0,(void*)addr,child,(void*)addr,(pte&PTE_SYSCALL)|PTE_SHARE))<0))
+			return r;
+	}
+
 	return 0;
 }
 
